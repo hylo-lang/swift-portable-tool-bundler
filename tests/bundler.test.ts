@@ -191,7 +191,10 @@ describe("bundle()", () => {
       platform: "linux",
       runLdd: (modulePath) => {
         lddInputs.push(modulePath);
-        if (modulePath.endsWith("/hello")) {
+        // Use path.basename rather than literal "/hello" suffix matching
+        // so the test works on Windows hosts (where path.join uses "\").
+        const base = path.basename(modulePath);
+        if (base === "hello") {
           return `\tlibswiftCore.so => ${path.join(toolchain, "libswiftCore.so")} (0x0)\n`;
         }
         if (path.resolve(modulePath) === path.resolve(toolchain, "libswiftCore.so")) {
