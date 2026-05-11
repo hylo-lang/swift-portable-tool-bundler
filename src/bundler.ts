@@ -339,6 +339,11 @@ function copyLinuxSoClosure(ctx: LinuxClosureCtx): void {
       ctx.out.push(dest);
     }
 
-    copyLinuxSoClosure({ ...ctx, entry: dest });
+    // Continue the walk against the *source* file in the toolchain, not
+    // the freshly-copied one in the bundle: ELF DT_RUNPATH entries like
+    // `$ORIGIN` resolve relative to the file's location, and the bundle
+    // is still being assembled so sibling deps are not yet present
+    // there. Walking the toolchain copy keeps rpath resolution stable.
+    copyLinuxSoClosure({ ...ctx, entry: sourceForCopy });
   }
 }

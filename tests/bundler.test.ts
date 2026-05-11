@@ -172,6 +172,49 @@ describe("bundle()", () => {
     expect(fs.existsSync(path.join(out, "libc.so.6"))).toBe(false);
   });
 
+  test("Linux: closure walk uses the toolchain source path so $ORIGIN rpath stays valid", () => {
+    // Regression test for the bug where we recursed on the bundled copy
+    // of a library, after which `ldd` could not find sibling deps that
+    // had not yet been copied into the bundle.
+    const build = tempDir("rpath-build");
+    const out = tempDir("rpath-out");
+    const toolchain = tempDir("rpath-tc");
+
+    writeFakeElf(path.join(build, "hello"));
+    fs.writeFileSync(path.join(toolchain, "libswiftCore.so"), "fake");
+    fs.writeFileSync(path.join(toolchain, "libdispatch.so"), "fake");
+
+    const lddInputs: string[] = [];
+    const result = bundle({
+      buildFolder: build,
+      outputDirectory: out,
+      platform: "linux",
+      runLdd: (modulePath) => {
+        lddInputs.push(modulePath);
+        if (modulePath.endsWith("/hello")) {
+          return `\tlibswiftCore.so => ${path.join(toolchain, "libswiftCore.so")} (0x0)\n`;
+        }
+        if (path.resolve(modulePath) === path.resolve(toolchain, "libswiftCore.so")) {
+          return `\tlibdispatch.so => ${path.join(toolchain, "libdispatch.so")} (0x0)\n`;
+        }
+        if (path.resolve(modulePath) === path.resolve(toolchain, "libdispatch.so")) {
+          return "";
+        }
+        throw new Error(`unexpected ldd target: ${modulePath}`);
+      },
+      log: () => {},
+    });
+
+    expect(result.libraryPaths.map((p) => path.basename(p)).sort()).toEqual([
+      "libdispatch.so",
+      "libswiftCore.so",
+    ]);
+    // The walk must have reached the toolchain copy of libswiftCore.so,
+    // not the bundle copy, so its $ORIGIN-rooted deps resolve.
+    expect(lddInputs).toContain(path.join(toolchain, "libswiftCore.so"));
+    expect(lddInputs).not.toContain(path.join(out, "libswiftCore.so"));
+  });
+
   test("Linux: errors out when an allow-listed SO is 'not found'", () => {
     const build = tempDir("linux-nf-build");
     const out = tempDir("linux-nf-out");
