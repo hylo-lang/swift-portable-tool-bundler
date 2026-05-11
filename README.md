@@ -11,13 +11,12 @@ The intended workflow is:
 2. Run this action with the build's bin path as the input; it produces an output directory containing:
    - The executable(s).
    - Every SwiftPM resource bundle (`*.resources` and `*.bundle` directories
-     are copied **verbatim** — names preserved so SwiftPM's generated
-     `Bundle.module` accessor keeps working).
+     are copied).
    - The transitive closure of allow-listed runtime dynamic libraries
      (Swift runtime, Foundation, libdispatch, and the MSVC runtime on
-     Windows). Anything else (system libraries, SwiftPM build metadata,
+     Windows) are copied. (Anything else (system libraries, SwiftPM build metadata,
      import libraries, intermediate `*.build/` dirs, `*.swiftmodule`,
-     `description.json`, …) is ignored.
+     `description.json`, ...) is ignored.)
 3. Archive / ship the output directory however you like (`tar --zstd`,
    `zip`, etc.).
 
