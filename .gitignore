@@ -1,0 +1,8 @@
+node_modules/
+build/
+coverage/
+*.tgz
+.DS_Store
+examples/**/.build/
+examples/**/.swiftpm/
+examples/**/Package.resolved

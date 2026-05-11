@@ -1,0 +1,37 @@
+name: swift-portable-tool-bundler
+description: >
+  Produce a portable bundle from a Swift build directory. Copies the
+  executable(s), any SwiftPM resource bundles (`*.resources`, `*.bundle`),
+  and the allow-listed dynamic library closure (Swift runtime, Foundation,
+  libdispatch, MSVC runtime on Windows) into an output directory suitable
+  for distribution. On Apple platforms the Swift runtime is system-provided
+  so no dylib bundling is performed. On Windows, `llvm-readobj` must be on
+  PATH (it ships with the Swift toolchain).
+
+author: Ambrus Tóth
+
+inputs:
+  build-folder:
+    required: true
+    description: >
+      Path to the Swift build products folder to bundle (typically the
+      output of `swift build --show-bin-path -c release --product <name>`).
+  output-directory:
+    required: true
+    description: >
+      Path to the output directory for the portable bundle. Created if it
+      does not exist.
+
+outputs:
+  bundlePath:
+    description: Absolute path to the bundle root directory.
+  executablePaths:
+    description: Newline-separated list of absolute paths to bundled executables.
+
+runs:
+  using: node24
+  main: dist/index.js
+
+branding:
+  icon: package
+  color: green

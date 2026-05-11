@@ -1,0 +1,35 @@
+{
+  "name": "swift-portable-tool-bundler",
+  "version": "0.0.1",
+  "description": "Bundles a Swift command-line tool's build folder into a portable, self-contained directory (executable + resource bundles + allow-listed runtime libraries).",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/hylo-lang/swift-portable-tool-bundler"
+  },
+  "author": "Ambrus Tóth",
+  "license": "Apache-2.0",
+  "scripts": {
+    "clean": "rm -rf ./build ./dist",
+    "build": "tsc -p tsconfig.json",
+    "lint": "eslint src tests",
+    "pack": "npm run lint && npm run build && ncc build build/src/action.js -o dist",
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "@types/node": "^24.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.20.0",
+    "@typescript-eslint/parser": "^8.20.0",
+    "@vercel/ncc": "^0.38.3",
+    "eslint": "^9.18.0",
+    "eslint-plugin-jest": "^29.0.0",
+    "jest": "^30.0.0",
+    "jest-circus": "^30.0.0",
+    "ts-jest": "^29.2.5",
+    "typescript": "^5.7.3"
+  },
+  "dependencies": {
+    "@actions/core": "^1.11.1",
+    "@actions/io": "^1.1.3"
+  }
+}

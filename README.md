@@ -1,0 +1,104 @@
+# swift-portable-tool-bundler
+
+A GitHub Action (and Node.js library) that turns a Swift build output directory
+into a portable, self-contained bundle: the executable plus only the files
+actually needed to run it on a machine without the Swift toolchain or the
+Visual C++ runtime installed.
+
+The intended workflow is:
+
+1. `swift build -c release --product my-tool`
+2. Run this action with the build's bin path as the input; it produces a
+   flat output directory containing:
+   - The executable(s).
+   - Every SwiftPM resource bundle (`*.resources` and `*.bundle` directories
+     are copied **verbatim** — names preserved so SwiftPM's generated
+     `Bundle.module` accessor keeps working).
+   - The transitive closure of allow-listed runtime dynamic libraries
+     (Swift runtime, Foundation, libdispatch, and the MSVC runtime on
+     Windows). Anything else (system libraries, SwiftPM build metadata,
+     import libraries, intermediate `*.build/` dirs, `*.swiftmodule`,
+     `description.json`, …) is ignored.
+3. Archive / ship the output directory however you like (`tar --zstd`,
+   `zip`, etc.).
+
+The allow-lists and dependency-walk strategy are ported from
+[moreSwift/swift-bundler](https://github.com/moreSwift/swift-bundler)'s
+`GenericWindowsBundler.swift` and `GenericLinuxBundler.swift`. Unlike
+swift-bundler, this tool **does not rename** `*.resources` directories to
+`*.bundle`, so apps using SwiftPM's stock `Bundle.module` accessor on
+Linux and Windows continue to resolve their resource bundles.
+
+## Inputs
+
+| Input | Required | Description |
+|---|---|---|
+| `build-folder` | yes | Path to the Swift build output directory (typically `swift build --show-bin-path -c release --product <name>`). |
+| `output-directory` | yes | Where to place the portable bundle. Created if it does not exist. |
+
+## Outputs
+
+| Output | Description |
+|---|---|
+| `bundlePath` | Absolute path to the bundle root. |
+| `executablePaths` | Newline-separated list of absolute paths to bundled executables. |
+
+## Requirements
+
+- Node.js 24 runner (the default for modern GitHub Actions).
+- **Windows**: `llvm-readobj` must be on `PATH`. It ships with the Swift
+  toolchain, so any action that puts Swift on `PATH`
+  (e.g. [`SwiftyLab/setup-swift`](https://github.com/SwiftyLab/setup-swift))
+  is sufficient.
+- **Linux**: `ldd` must be on `PATH` (standard on every distro).
+- **macOS**: no extra tools are required; the Swift runtime ships with the
+  OS so no dylib bundling is performed.
+
+## Usage
+
+```yaml
+- uses: SwiftyLab/setup-swift@latest
+  with:
+    swift-version: "6.2"
+
+- name: Build
+  run: swift build -c release --product my-tool
+  shell: pwsh
+
+- name: Locate bin path
+  id: locate
+  shell: pwsh
+  run: |
+    $bin = (swift build -c release --product my-tool --show-bin-path).Trim()
+    "bin_path=$bin" >> $env:GITHUB_OUTPUT
+
+- name: Assemble portable bundle
+  uses: hylo-lang/swift-portable-tool-bundler@v1
+  with:
+    build-folder: ${{ steps.locate.outputs.bin_path }}
+    output-directory: ${{ runner.temp }}/my-tool-bundle
+
+- name: Archive
+  shell: pwsh
+  run: tar --zstd -cf my-tool.tar.zst -C "${{ runner.temp }}/my-tool-bundle" .
+```
+
+## Development
+
+```sh
+npm ci
+npm test          # unit tests
+npm run lint      # eslint
+npm run build     # tsc -> build/
+npm run pack      # lint + build + ncc bundle -> dist/index.js
+```
+
+Unit tests use Jest and mock `ldd` / `llvm-readobj` / the filesystem
+where useful, so the whole suite runs on every host platform.
+
+## Credits
+
+Allow-lists and walk strategy adapted from
+[moreSwift/swift-bundler](https://github.com/moreSwift/swift-bundler).
+Originally forked from
+[hylo-lang/swift-windows-dll-bundler](https://github.com/hylo-lang/swift-windows-dll-bundler).

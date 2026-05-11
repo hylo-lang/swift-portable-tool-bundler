@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: Unit tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-15]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.x"
+      - run: npm ci
+        shell: bash
+      - run: npx jest
+        shell: bash
+
+  check-dist:
+    name: Check dist/ is up-to-date
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24.x"
+      - run: npm ci
+      - run: npm run pack
+      - name: Verify dist/ has no uncommitted changes
+        run: |
+          if ! git diff --exit-code -- dist; then
+            echo "::error::dist/ is out of date. Run 'npm run pack' and commit the result."
+            exit 1
+          fi
+
+  integration-test:
+    name: Integration test (${{ matrix.target }})
+    needs:
+      - unit-tests
+      - check-dist
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     target: linux-x64 }
+          - { os: ubuntu-24.04-arm, target: linux-arm64 }
+          - { os: windows-2025,     target: windows-x64 }
+          - { os: windows-11-arm,   target: windows-arm64 }
+          - { os: macos-15,         target: macos-arm64 }
+          - { os: macos-15-intel,   target: macos-x64 }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Swift
+        uses: SwiftyLab/setup-swift@latest
+        with:
+          swift-version: "6.2"
+
+      - name: Build sample
+        working-directory: examples/hello
+        shell: pwsh
+        run: swift build -c release --product hello
+
+      - name: Locate bin path
+        id: locate
+        working-directory: examples/hello
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $bin = (swift build -c release --product hello --show-bin-path).Trim()
+          "bin_path=$bin" >> $env:GITHUB_OUTPUT
+
+      - name: Run swift-portable-tool-bundler
+        id: bundle
+        uses: ./
+        with:
+          build-folder: ${{ steps.locate.outputs.bin_path }}
+          output-directory: ${{ runner.temp }}/bundle
+
+      - name: List bundle contents
+        shell: pwsh
+        run: Get-ChildItem -LiteralPath "${{ runner.temp }}/bundle" -Recurse | Select-Object FullName,Length
+
+      - name: Run bundled executable in a toolchain-free environment (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/bin:/bin"
+          if command -v swift >/dev/null 2>&1; then
+            echo "::error::'swift' is still on PATH after sanitization"
+            exit 1
+          fi
+          chmod +x "${RUNNER_TEMP}/bundle/hello"
+          "${RUNNER_TEMP}/bundle/hello"
+
+      - name: Run bundled executable in a toolchain-free environment (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/usr/bin:/bin"
+          chmod +x "${RUNNER_TEMP}/bundle/hello"
+          "${RUNNER_TEMP}/bundle/hello"
+
+      - name: Run bundled executable in a Swift-free environment (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot;$env:SystemRoot\System32\Wbem;$env:SystemRoot\System32\WindowsPowerShell\v1.0"
+          $swift = Get-Command swift -ErrorAction SilentlyContinue
+          if ($swift) {
+            Write-Error "'swift' is still on PATH after sanitization: $($swift.Source)"
+            exit 1
+          }
+          & "${{ runner.temp }}/bundle/hello.exe"
