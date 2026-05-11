@@ -63,7 +63,7 @@ describe("run.main()", () => {
     );
   });
 
-  test("calls setFailed with a clear message when build-folder does not exist", async () => {
+  test("calls setFailed with a clear message when build-directory does not exist", async () => {
     const out = tempDir("fail-out");
     const result = await main({
       buildFolder: "/definitely/does/not/exist",
@@ -72,7 +72,7 @@ describe("run.main()", () => {
     });
     expect(result).toBeUndefined();
     expect(setFailed).toHaveBeenCalledTimes(1);
-    expect(setFailed.mock.calls[0][0]).toMatch(/build-folder does not exist/);
+    expect(setFailed.mock.calls[0][0]).toMatch(/build-directory does not exist/);
   });
 
   test("reads inputs from core.getInput when overrides are not supplied", async () => {
@@ -83,7 +83,7 @@ describe("run.main()", () => {
     const getInput = jest
       .spyOn(core, "getInput")
       .mockImplementation((name: string) => {
-        if (name === "build-folder") return build;
+        if (name === "build-directory") return build;
         if (name === "output-directory") return out;
         return "";
       });
@@ -99,13 +99,13 @@ describe("run.main()", () => {
     getInput.mockRestore();
   });
 
-  test("fails fast when the required 'build-folder' input is absent", async () => {
+  test("fails fast when the required 'build-directory' input is absent", async () => {
     const getInput = jest
       .spyOn(core, "getInput")
       .mockImplementation(() => "");
     await main();
     expect(setFailed).toHaveBeenCalledTimes(1);
-    expect(setFailed.mock.calls[0][0]).toMatch(/build-folder/);
+    expect(setFailed.mock.calls[0][0]).toMatch(/build-directory/);
     getInput.mockRestore();
   });
 });

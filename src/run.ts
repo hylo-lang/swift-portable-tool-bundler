@@ -17,12 +17,12 @@ export async function main(
   try {
     const buildFolder =
       overrides?.buildFolder ??
-      core.getInput("build-folder", { required: true });
+      core.getInput("build-directory", { required: true });
     const outputDirectory =
       overrides?.outputDirectory ??
       core.getInput("output-directory", { required: true });
 
-    core.info(`build-folder: ${buildFolder}`);
+    core.info(`build-directory: ${buildFolder}`);
     core.info(`output-directory: ${outputDirectory}`);
 
     const result = await core.group("Bundling portable tool", async () => {

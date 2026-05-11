@@ -8,8 +8,7 @@ Visual C++ runtime installed.
 The intended workflow is:
 
 1. `swift build -c release --product my-tool`
-2. Run this action with the build's bin path as the input; it produces a
-   flat output directory containing:
+2. Run this action with the build's bin path as the input; it produces an output directory containing:
    - The executable(s).
    - Every SwiftPM resource bundle (`*.resources` and `*.bundle` directories
      are copied **verbatim** — names preserved so SwiftPM's generated
@@ -22,18 +21,11 @@ The intended workflow is:
 3. Archive / ship the output directory however you like (`tar --zstd`,
    `zip`, etc.).
 
-The allow-lists and dependency-walk strategy are ported from
-[moreSwift/swift-bundler](https://github.com/moreSwift/swift-bundler)'s
-`GenericWindowsBundler.swift` and `GenericLinuxBundler.swift`. Unlike
-swift-bundler, this tool **does not rename** `*.resources` directories to
-`*.bundle`, so apps using SwiftPM's stock `Bundle.module` accessor on
-Linux and Windows continue to resolve their resource bundles.
-
 ## Inputs
 
 | Input | Required | Description |
 |---|---|---|
-| `build-folder` | yes | Path to the Swift build output directory (typically `swift build --show-bin-path -c release --product <name>`). |
+| `build-directory` | yes | Path to the Swift build output directory (typically `swift build --show-bin-path -c release --product <name>`). |
 | `output-directory` | yes | Where to place the portable bundle. Created if it does not exist. |
 
 ## Outputs
@@ -75,7 +67,7 @@ Linux and Windows continue to resolve their resource bundles.
 - name: Assemble portable bundle
   uses: hylo-lang/swift-portable-tool-bundler@v1
   with:
-    build-folder: ${{ steps.locate.outputs.bin_path }}
+    build-directory: ${{ steps.locate.outputs.bin_path }}
     output-directory: ${{ runner.temp }}/my-tool-bundle
 
 - name: Archive
@@ -98,7 +90,6 @@ where useful, so the whole suite runs on every host platform.
 
 ## Credits
 
-Allow-lists and walk strategy adapted from
-[moreSwift/swift-bundler](https://github.com/moreSwift/swift-bundler).
-Originally forked from
-[hylo-lang/swift-windows-dll-bundler](https://github.com/hylo-lang/swift-windows-dll-bundler).
+The allow-lists and dependency-walk strategy are ported from [moreSwift/swift-bundler](https://github.com/moreSwift/swift-bundler)'s `GenericWindowsBundler.swift` and `GenericLinuxBundler.swift`. Thanks for all the work!
+
+Unlike swift-bundler, this tool **does not rename** `*.resources` directories to `*.bundle`, so apps using SwiftPM's stock `Bundle.module` accessor on Linux and Windows continue to resolve their resource bundles.

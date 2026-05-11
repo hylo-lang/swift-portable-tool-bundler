@@ -35,17 +35,17 @@ function writeFakePe(p: string): void {
 }
 
 describe("bundle()", () => {
-  test("errors out when build-folder is missing", () => {
+  test("errors out when build-directory is missing", () => {
     expect(() =>
       bundle({
         buildFolder: "/definitely/does/not/exist",
         outputDirectory: tempDir("missing-out"),
         platform: "linux",
       }),
-    ).toThrow(/build-folder does not exist/);
+    ).toThrow(/build-directory does not exist/);
   });
 
-  test("errors out when build-folder has no executables", () => {
+  test("errors out when build-directory has no executables", () => {
     const build = tempDir("empty-build");
     const out = tempDir("empty-out");
     fs.writeFileSync(path.join(build, "README.txt"), "hello");

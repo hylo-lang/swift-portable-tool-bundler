@@ -64,7 +64,7 @@ export function bundle(opts: BundleOptions): BundleResult {
   const outputDirectory = path.resolve(opts.outputDirectory);
 
   if (!fs.existsSync(buildFolder) || !fs.statSync(buildFolder).isDirectory()) {
-    throw new Error(`build-folder does not exist or is not a directory: ${buildFolder}`);
+    throw new Error(`build-directory does not exist or is not a directory: ${buildFolder}`);
   }
 
   fs.mkdirSync(outputDirectory, { recursive: true });
@@ -72,7 +72,7 @@ export function bundle(opts: BundleOptions): BundleResult {
   const executablePaths = copyExecutables(buildFolder, outputDirectory, platform, log);
   if (executablePaths.length === 0) {
     throw new Error(
-      `No executables found in build-folder: ${buildFolder}. ` +
+      `No executables found in build-directory: ${buildFolder}. ` +
         `Nothing to bundle.`,
     );
   }

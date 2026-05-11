@@ -11,7 +11,7 @@ description: >
 author: Ambrus Tóth
 
 inputs:
-  build-folder:
+  build-directory:
     required: true
     description: >
       Path to the Swift build products folder to bundle (typically the

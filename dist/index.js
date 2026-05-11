@@ -182,12 +182,12 @@ function bundle(opts) {
     const buildFolder = path.resolve(opts.buildFolder);
     const outputDirectory = path.resolve(opts.outputDirectory);
     if (!fs.existsSync(buildFolder) || !fs.statSync(buildFolder).isDirectory()) {
-        throw new Error(`build-folder does not exist or is not a directory: ${buildFolder}`);
+        throw new Error(`build-directory does not exist or is not a directory: ${buildFolder}`);
     }
     fs.mkdirSync(outputDirectory, { recursive: true });
     const executablePaths = copyExecutables(buildFolder, outputDirectory, platform, log);
     if (executablePaths.length === 0) {
-        throw new Error(`No executables found in build-folder: ${buildFolder}. ` +
+        throw new Error(`No executables found in build-directory: ${buildFolder}. ` +
             `Nothing to bundle.`);
     }
     const resourceBundlePaths = copyResourceBundles(buildFolder, outputDirectory, log);
@@ -552,10 +552,10 @@ const bundler_1 = __nccwpck_require__(3940);
 async function main(overrides) {
     try {
         const buildFolder = overrides?.buildFolder ??
-            core.getInput("build-folder", { required: true });
+            core.getInput("build-directory", { required: true });
         const outputDirectory = overrides?.outputDirectory ??
             core.getInput("output-directory", { required: true });
-        core.info(`build-folder: ${buildFolder}`);
+        core.info(`build-directory: ${buildFolder}`);
         core.info(`output-directory: ${outputDirectory}`);
         const result = await core.group("Bundling portable tool", async () => {
             return (0, bundler_1.bundle)({

@@ -82,7 +82,7 @@ jobs:
         id: bundle
         uses: ./
         with:
-          build-folder: ${{ steps.locate.outputs.bin_path }}
+          build-directory: ${{ steps.locate.outputs.bin_path }}
           output-directory: ${{ runner.temp }}/bundle
 
       - name: List bundle contents
