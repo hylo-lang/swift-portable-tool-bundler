@@ -40,21 +40,34 @@ jobs:
             exit 1
           fi
 
-  integration-test:
-    name: Integration test (${{ matrix.target }})
+  bundle:
+    name: Bundle (${{ matrix.target }}, ${{ matrix.linking }})
     needs:
       - unit-tests
       - check-dist
     strategy:
       fail-fast: false
+      # Two axes:
+      #   target  — host OS / architecture combinations we support.
+      #   linking — `dynamic` is the SwiftPM default; `static` adds
+      #             `--static-swift-stdlib` so the Swift stdlib is
+      #             linked into the executable. Static-stdlib builds
+      #             still need a Foundation dylib on Linux/Windows;
+      #             on macOS the Foundation framework is OS-provided.
       matrix:
         include:
-          - { os: ubuntu-24.04,     target: linux-x64 }
-          - { os: ubuntu-24.04-arm, target: linux-arm64 }
-          - { os: windows-2025,     target: windows-x64 }
-          - { os: windows-11-arm,   target: windows-arm64 }
-          - { os: macos-15,         target: macos-arm64 }
-          - { os: macos-15-intel,   target: macos-x64 }
+          - { os: ubuntu-24.04,     target: linux-x64,     linking: dynamic }
+          - { os: ubuntu-24.04,     target: linux-x64,     linking: static  }
+          - { os: ubuntu-24.04-arm, target: linux-arm64,   linking: dynamic }
+          - { os: ubuntu-24.04-arm, target: linux-arm64,   linking: static  }
+          - { os: windows-2025,     target: windows-x64,   linking: dynamic }
+          - { os: windows-2025,     target: windows-x64,   linking: static  }
+          - { os: windows-11-arm,   target: windows-arm64, linking: dynamic }
+          - { os: windows-11-arm,   target: windows-arm64, linking: static  }
+          - { os: macos-15,         target: macos-arm64,   linking: dynamic }
+          - { os: macos-15,         target: macos-arm64,   linking: static  }
+          - { os: macos-15-intel,   target: macos-x64,     linking: dynamic }
+          - { os: macos-15-intel,   target: macos-x64,     linking: static  }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -64,10 +77,17 @@ jobs:
         with:
           swift-version: "6.2"
 
+      - name: Compute build flags
+        id: flags
+        shell: pwsh
+        run: |
+          $extra = if ('${{ matrix.linking }}' -eq 'static') { '--static-swift-stdlib' } else { '' }
+          "extra=$extra" >> $env:GITHUB_OUTPUT
+
       - name: Build sample
         working-directory: examples/hello
         shell: pwsh
-        run: swift build -c release --product hello
+        run: swift build -c release --product hello ${{ steps.flags.outputs.extra }}
 
       - name: Locate bin path
         id: locate
@@ -75,17 +95,58 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $bin = (swift build -c release --product hello --show-bin-path).Trim()
+          $bin = (swift build -c release --product hello ${{ steps.flags.outputs.extra }} --show-bin-path).Trim()
           "bin_path=$bin" >> $env:GITHUB_OUTPUT
 
       - name: Run swift-portable-tool-bundler
-        id: bundle
         uses: ./
         with:
           build-directory: ${{ steps.locate.outputs.bin_path }}
           output-directory: ${{ runner.temp }}/bundle
 
       - name: List bundle contents
+        shell: pwsh
+        run: Get-ChildItem -LiteralPath "${{ runner.temp }}/bundle" -Recurse | Select-Object FullName,Length
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: bundle-${{ matrix.target }}-${{ matrix.linking }}
+          path: ${{ runner.temp }}/bundle
+          if-no-files-found: error
+          retention-days: 7
+
+  verify:
+    # Verifying on a fresh runner — without the Swift toolchain or any
+    # other build artefacts being present — is the strongest possible
+    # check that the bundle is genuinely self-contained.
+    name: Verify (${{ matrix.target }}, ${{ matrix.linking }})
+    needs: bundle
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04,     target: linux-x64,     linking: dynamic }
+          - { os: ubuntu-24.04,     target: linux-x64,     linking: static  }
+          - { os: ubuntu-24.04-arm, target: linux-arm64,   linking: dynamic }
+          - { os: ubuntu-24.04-arm, target: linux-arm64,   linking: static  }
+          - { os: windows-2025,     target: windows-x64,   linking: dynamic }
+          - { os: windows-2025,     target: windows-x64,   linking: static  }
+          - { os: windows-11-arm,   target: windows-arm64, linking: dynamic }
+          - { os: windows-11-arm,   target: windows-arm64, linking: static  }
+          - { os: macos-15,         target: macos-arm64,   linking: dynamic }
+          - { os: macos-15,         target: macos-arm64,   linking: static  }
+          - { os: macos-15-intel,   target: macos-x64,     linking: dynamic }
+          - { os: macos-15-intel,   target: macos-x64,     linking: static  }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Download bundle artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: bundle-${{ matrix.target }}-${{ matrix.linking }}
+          path: ${{ runner.temp }}/bundle
+
+      - name: List downloaded bundle
         shell: pwsh
         run: Get-ChildItem -LiteralPath "${{ runner.temp }}/bundle" -Recurse | Select-Object FullName,Length
 
