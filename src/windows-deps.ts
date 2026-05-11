@@ -12,6 +12,8 @@ export const defaultReadobj: RunReadobj = (args) =>
   execFileSync("llvm-readobj", args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    // Hard cap so a wedged or hung llvm-readobj cannot stall a CI run.
+    timeout: 30_000,
   });
 
 /**
@@ -22,11 +24,11 @@ export const defaultReadobj: RunReadobj = (args) =>
  * reliable indicator that either the input is not a PE file or the tool
  * failed silently.
  */
-export function parseCoffImports(output: string, module: string): string[] {
+export function parseCoffImports(output: string, modulePath: string): string[] {
   const chunks = output.split(/Import\s*\{/);
   if (chunks.length < 2) {
     throw new Error(
-      `llvm-readobj produced no Import sections for '${module}'. Output was:\n${output}`,
+      `llvm-readobj produced no Import sections for '${modulePath}'. Output was:\n${output}`,
     );
   }
 
@@ -36,7 +38,7 @@ export function parseCoffImports(output: string, module: string): string[] {
     const m = nameRe.exec(chunks[i]);
     if (!m) {
       throw new Error(
-        `Could not find 'Name:' field in Import block #${i} of '${module}'. Block was:\n${chunks[i]}`,
+        `Could not find 'Name:' field in Import block #${i} of '${modulePath}'. Block was:\n${chunks[i]}`,
       );
     }
     deps.push(m[1]);

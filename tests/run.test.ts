@@ -47,7 +47,7 @@ describe("run.main()", () => {
     writeFakeElf(path.join(build, "hello"));
 
     const result = await main({
-      buildFolder: build,
+      buildDirectory: build,
       outputDirectory: out,
       platform: "linux",
       runLdd: () => "",
@@ -66,7 +66,7 @@ describe("run.main()", () => {
   test("calls setFailed with a clear message when build-directory does not exist", async () => {
     const out = tempDir("fail-out");
     const result = await main({
-      buildFolder: "/definitely/does/not/exist",
+      buildDirectory: "/definitely/does/not/exist",
       outputDirectory: out,
       platform: "linux",
     });

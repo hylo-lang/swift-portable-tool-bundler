@@ -1,5 +1,7 @@
 # swift-portable-tool-bundler
 
+[![CI](https://github.com/hylo-lang/swift-portable-tool-bundler/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hylo-lang/swift-portable-tool-bundler/actions/workflows/ci.yml)
+
 A GitHub Action (and Node.js library) that turns a Swift build output directory
 into a portable, self-contained bundle: the executable plus only the files
 actually needed to run it on a machine without the Swift toolchain or the
@@ -74,6 +76,35 @@ The intended workflow is:
   run: tar --zstd -cf my-tool.tar.zst -C "${{ runner.temp }}/my-tool-bundle" .
 ```
 
+## Static-stdlib builds
+
+Using `swift build --static-swift-stdlib` does **not** make this action
+redundant on Linux or Windows. The Swift standard library is then
+linked into your executable, but the build still depends dynamically on
+Foundation, ICU and the MSVC runtime, all of which the bundler still
+needs to resolve and copy. The CI matrix exercises both linking modes
+on every supported (OS, architecture) pair so this guarantee is tested
+on every commit.
+
+On macOS `--static-swift-stdlib` collapses the closure to nothing the
+action has to copy: Foundation comes from the OS-provided framework.
+
+## Customising the allow-list
+
+The allow-lists in [`src/allowlist.ts`](src/allowlist.ts) enumerate the
+file names the bundler is willing to copy out of the dynamic-library
+closure. Anything outside the lists is treated as an OS-provided
+library and skipped. If your project ships its own dylib that should
+travel with the executable, the simplest options are:
+
+- Put the library next to the binary in the build directory; both the
+  Windows and Linux walkers preserve build-local files unconditionally.
+- Fork this repo, extend `WINDOWS_DLL_ALLOWLIST` / `LINUX_SO_ALLOWLIST`,
+  and use the fork via `uses: <your-org>/swift-portable-tool-bundler@…`.
+
+If there is a runtime library you think the upstream allow-list should
+carry by default, please [open an issue](https://github.com/hylo-lang/swift-portable-tool-bundler/issues).
+
 ## Development
 
 ```sh
@@ -85,7 +116,8 @@ npm run pack      # lint + build + ncc bundle -> dist/index.js
 ```
 
 Unit tests use Jest and mock `ldd` / `llvm-readobj` / the filesystem
-where useful, so the whole suite runs on every host platform.
+where useful, so the whole suite runs on every host platform. See
+[`CONTRIBUTING.md`](CONTRIBUTING.md) for the pre-PR checklist.
 
 ## Credits
 

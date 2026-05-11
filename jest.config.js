@@ -14,6 +14,11 @@ module.exports = {
     "<rootDir>/node_modules/",
     "<rootDir>/tests",
     "<rootDir>/dist",
+    // Pure bootstrap; the testable logic lives in `src/run.ts`, which
+    // `tests/run.test.ts` exercises directly. Including the bootstrap
+    // would require running the action under a child process and would
+    // not add real coverage.
+    "<rootDir>/src/action.ts",
   ],
   collectCoverageFrom: [
     "src/**",

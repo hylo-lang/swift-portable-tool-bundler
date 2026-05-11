@@ -15,20 +15,20 @@ export async function main(
   overrides?: Partial<BundleOptions>,
 ): Promise<BundleResult | undefined> {
   try {
-    const buildFolder =
-      overrides?.buildFolder ??
+    const buildDirectory =
+      overrides?.buildDirectory ??
       core.getInput("build-directory", { required: true });
     const outputDirectory =
       overrides?.outputDirectory ??
       core.getInput("output-directory", { required: true });
 
-    core.info(`build-directory: ${buildFolder}`);
+    core.info(`build-directory: ${buildDirectory}`);
     core.info(`output-directory: ${outputDirectory}`);
 
     const result = await core.group("Bundling portable tool", async () => {
       return bundle({
         ...overrides,
-        buildFolder,
+        buildDirectory,
         outputDirectory,
         log: overrides?.log ?? ((m: string) => core.info(m)),
       });

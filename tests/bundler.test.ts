@@ -38,7 +38,7 @@ describe("bundle()", () => {
   test("errors out when build-directory is missing", () => {
     expect(() =>
       bundle({
-        buildFolder: "/definitely/does/not/exist",
+        buildDirectory: "/definitely/does/not/exist",
         outputDirectory: tempDir("missing-out"),
         platform: "linux",
       }),
@@ -50,7 +50,7 @@ describe("bundle()", () => {
     const out = tempDir("empty-out");
     fs.writeFileSync(path.join(build, "README.txt"), "hello");
     expect(() =>
-      bundle({ buildFolder: build, outputDirectory: out, platform: "linux" }),
+      bundle({ buildDirectory: build, outputDirectory: out, platform: "linux" }),
     ).toThrow(/No executables found/);
   });
 
@@ -78,7 +78,7 @@ describe("bundle()", () => {
     fs.writeFileSync(path.join(build, "description.json"), "{}");
 
     const result = bundle({
-      buildFolder: build,
+      buildDirectory: build,
       outputDirectory: out,
       platform: "linux",
       runLdd: () => "", // no dynamic deps
@@ -113,7 +113,7 @@ describe("bundle()", () => {
     writeFakeElf(path.join(build, "hello"));
     expect(fs.existsSync(out)).toBe(false);
     bundle({
-      buildFolder: build,
+      buildDirectory: build,
       outputDirectory: out,
       platform: "linux",
       runLdd: () => "",
@@ -128,7 +128,7 @@ describe("bundle()", () => {
     writeFakeElf(path.join(build, "hello"));
     fs.writeFileSync(path.join(build, "README"), "not an ELF");
     const result = bundle({
-      buildFolder: build,
+      buildDirectory: build,
       outputDirectory: out,
       platform: "linux",
       runLdd: () => "",
@@ -152,7 +152,7 @@ describe("bundle()", () => {
     fs.writeFileSync(systemLib, "fake-so-contents");
 
     const result = bundle({
-      buildFolder: build,
+      buildDirectory: build,
       outputDirectory: out,
       platform: "linux",
       runLdd: () =>
@@ -186,7 +186,7 @@ describe("bundle()", () => {
 
     const lddInputs: string[] = [];
     const result = bundle({
-      buildFolder: build,
+      buildDirectory: build,
       outputDirectory: out,
       platform: "linux",
       runLdd: (modulePath) => {
@@ -218,13 +218,101 @@ describe("bundle()", () => {
     expect(lddInputs).not.toContain(path.join(out, "libswiftCore.so"));
   });
 
+  test("Linux: copies the realpath target when the SO is reached through a symlink", () => {
+    // Toolchains commonly ship `libFoo.so -> libFoo.so.6` versioned
+    // symlinks. The bundle must contain the actual file contents, not
+    // a dangling absolute symlink to the toolchain.
+    const build = tempDir("symlink-build");
+    const out = tempDir("symlink-out");
+    const toolchain = tempDir("symlink-tc");
+
+    writeFakeElf(path.join(build, "hello"));
+    const real = path.join(toolchain, "libswiftCore.so.6.2");
+    fs.writeFileSync(real, "real-contents");
+    const link = path.join(toolchain, "libswiftCore.so");
+    fs.symlinkSync(real, link);
+
+    bundle({
+      buildDirectory: build,
+      outputDirectory: out,
+      platform: "linux",
+      runLdd: (modulePath) => {
+        if (path.basename(modulePath) === "hello") {
+          return `\tlibswiftCore.so => ${link} (0x0)\n`;
+        }
+        return "";
+      },
+      log: () => {},
+    });
+
+    const bundled = path.join(out, "libswiftCore.so");
+    expect(fs.existsSync(bundled)).toBe(true);
+    expect(fs.lstatSync(bundled).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(bundled, "utf8")).toBe("real-contents");
+  });
+
+  test("Linux: terminates on cyclic SO dependencies", () => {
+    // Pathological but possible: A imports B, B imports A. The walk must
+    // de-dup by SONAME and not blow the stack.
+    const build = tempDir("cycle-build");
+    const out = tempDir("cycle-out");
+    const toolchain = tempDir("cycle-tc");
+
+    writeFakeElf(path.join(build, "hello"));
+    fs.writeFileSync(path.join(toolchain, "libswiftCore.so"), "a");
+    fs.writeFileSync(path.join(toolchain, "libdispatch.so"), "b");
+
+    let calls = 0;
+    bundle({
+      buildDirectory: build,
+      outputDirectory: out,
+      platform: "linux",
+      runLdd: (modulePath) => {
+        calls++;
+        if (calls > 50) throw new Error("walk did not terminate");
+        const base = path.basename(modulePath);
+        if (base === "hello") {
+          return `\tlibswiftCore.so => ${path.join(toolchain, "libswiftCore.so")} (0x0)\n`;
+        }
+        if (base === "libswiftCore.so") {
+          return `\tlibdispatch.so => ${path.join(toolchain, "libdispatch.so")} (0x0)\n`;
+        }
+        if (base === "libdispatch.so") {
+          // Cycle back into libswiftCore.so.
+          return `\tlibswiftCore.so => ${path.join(toolchain, "libswiftCore.so")} (0x0)\n`;
+        }
+        return "";
+      },
+      log: () => {},
+    });
+
+    expect(calls).toBeLessThanOrEqual(10);
+  });
+
+  test("Linux: errors out when ldd itself fails on the root executable", () => {
+    const build = tempDir("ldd-fail-build");
+    const out = tempDir("ldd-fail-out");
+    writeFakeElf(path.join(build, "hello"));
+    expect(() =>
+      bundle({
+        buildDirectory: build,
+        outputDirectory: out,
+        platform: "linux",
+        runLdd: () => {
+          throw new Error("ldd: command not found");
+        },
+        log: () => {},
+      }),
+    ).toThrow(/ldd failed on root executable/);
+  });
+
   test("Linux: errors out when an allow-listed SO is 'not found'", () => {
     const build = tempDir("linux-nf-build");
     const out = tempDir("linux-nf-out");
     writeFakeElf(path.join(build, "hello"));
     expect(() =>
       bundle({
-        buildFolder: build,
+        buildDirectory: build,
         outputDirectory: out,
         platform: "linux",
         runLdd: () => "\tlibswiftCore.so => not found\n",
@@ -246,7 +334,7 @@ describe("bundle()", () => {
     );
 
     // After `copyExecutables`, the closure walk targets the exe inside the
-    // bundle, not the source in the build folder.
+    // bundle, not the source in the build directory.
     const readobjOutputs: Record<string, string> = {
       [path.join(out, "hello.exe")]: [
         "Import {",
@@ -262,7 +350,7 @@ describe("bundle()", () => {
 
     const seenInputs: string[] = [];
     const result = bundle({
-      buildFolder: build,
+      buildDirectory: build,
       outputDirectory: out,
       platform: "windows",
       pathDirs: [systemDir],
@@ -291,7 +379,7 @@ describe("bundle()", () => {
     writeFakePe(path.join(build, "hello.exe"));
     expect(() =>
       bundle({
-        buildFolder: build,
+        buildDirectory: build,
         outputDirectory: out,
         platform: "windows",
         pathDirs: [],
@@ -318,7 +406,7 @@ describe("bundle()", () => {
     );
 
     const result = bundle({
-      buildFolder: build,
+      buildDirectory: build,
       outputDirectory: out,
       platform: "darwin",
       runLdd: () => {

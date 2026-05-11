@@ -1,6 +1,21 @@
 // SPDX short identifier: Apache-2.0
 //
 // Orchestrates assembling a portable bundle from a Swift build directory.
+//
+// Closure-walk recursion-target rule (subtle but important):
+//
+// * Windows / PE — imports are resolved by *name* (no rpath concept), so
+//   after copying a DLL into the bundle we recurse on the **bundled copy**.
+//   This keeps the walk anchored to the final layout and lets test stubs
+//   reason exclusively about bundle-local paths.
+//
+// * Linux / ELF — DT_RUNPATH entries (commonly `$ORIGIN`) resolve relative
+//   to the file's location at the time `ld.so` reads it. The bundle is
+//   still being assembled so siblings are not yet present there; we must
+//   recurse on the **toolchain source path** so rpath stays valid.
+//
+// Any future change that touches the recursion target needs to preserve
+// this asymmetry. There are dedicated regression tests for both branches.
 
 import * as fs from "fs";
 import * as path from "path";
@@ -12,7 +27,7 @@ import { getSoDependencies, LddEntry, RunLdd } from "./linux-deps";
 
 export interface BundleOptions {
   /** Source Swift build products directory. */
-  buildFolder: string;
+  buildDirectory: string;
   /** Destination bundle directory. Created if missing. */
   outputDirectory: string;
   /** Override the detected platform (for testing). */
@@ -40,7 +55,7 @@ export interface BundleResult {
 
 /**
  * Produce a portable bundle. Copies the allow-listed subset of
- * `buildFolder` into `outputDirectory`:
+ * `buildDirectory` into `outputDirectory`:
  *
  * 1. Every executable (`*.exe` on Windows; any extensionless regular file
  *    on Linux/macOS) is copied verbatim.
@@ -53,40 +68,40 @@ export interface BundleResult {
  *    into the bundle. On macOS no dylibs are bundled (the Swift runtime
  *    ships with the OS).
  *
- * Anything else in the build folder — SwiftPM build metadata, import
+ * Anything else in the build directory — SwiftPM build metadata, import
  * libraries, intermediate object directories, etc. — is ignored.
  */
 export function bundle(opts: BundleOptions): BundleResult {
   const platform = opts.platform ?? currentPlatform();
   const log = opts.log ?? ((msg: string) => console.log(msg));
 
-  const buildFolder = path.resolve(opts.buildFolder);
+  const buildDirectory = path.resolve(opts.buildDirectory);
   const outputDirectory = path.resolve(opts.outputDirectory);
 
-  if (!fs.existsSync(buildFolder) || !fs.statSync(buildFolder).isDirectory()) {
-    throw new Error(`build-directory does not exist or is not a directory: ${buildFolder}`);
+  if (!fs.existsSync(buildDirectory) || !fs.statSync(buildDirectory).isDirectory()) {
+    throw new Error(`build-directory does not exist or is not a directory: ${buildDirectory}`);
   }
 
   fs.mkdirSync(outputDirectory, { recursive: true });
 
-  const executablePaths = copyExecutables(buildFolder, outputDirectory, platform, log);
+  const executablePaths = copyExecutables(buildDirectory, outputDirectory, platform, log);
   if (executablePaths.length === 0) {
     throw new Error(
-      `No executables found in build-directory: ${buildFolder}. ` +
+      `No executables found in build-directory: ${buildDirectory}. ` +
         `Nothing to bundle.`,
     );
   }
 
-  const resourceBundlePaths = copyResourceBundles(buildFolder, outputDirectory, log);
+  const resourceBundlePaths = copyResourceBundles(buildDirectory, outputDirectory, log);
 
   const libraryPaths: string[] = [];
   if (platform === "windows") {
-    const pathDirs = opts.pathDirs ?? splitPath(process.env.PATH ?? "");
+    const pathDirs = opts.pathDirs ?? splitPath(process.env.PATH ?? "", platform);
     for (const exe of executablePaths) {
       copyWindowsDllClosure({
         entry: exe,
         bundleDir: outputDirectory,
-        buildFolder,
+        buildDirectory,
         pathDirs,
         runReadobj: opts.runReadobj,
         visited: new Set<string>(),
@@ -98,8 +113,9 @@ export function bundle(opts: BundleOptions): BundleResult {
     for (const exe of executablePaths) {
       copyLinuxSoClosure({
         entry: exe,
+        isRoot: true,
         bundleDir: outputDirectory,
-        buildFolder,
+        buildDirectory,
         runLdd: opts.runLdd,
         visited: new Set<string>(),
         out: libraryPaths,
@@ -117,22 +133,23 @@ export function bundle(opts: BundleOptions): BundleResult {
   };
 }
 
-function splitPath(p: string): string[] {
-  const sep = process.platform === "win32" ? ";" : ":";
+/** Splits an OS-style PATH list using the separator appropriate for `platform`. */
+export function splitPath(p: string, platform: Platform): string[] {
+  const sep = platform === "windows" ? ";" : ":";
   return p.split(sep).filter((s) => s.length > 0);
 }
 
 function copyExecutables(
-  buildFolder: string,
+  buildDirectory: string,
   outputDirectory: string,
   platform: Platform,
   log: (msg: string) => void,
 ): string[] {
   const copied: string[] = [];
-  for (const entry of fs.readdirSync(buildFolder, { withFileTypes: true })) {
+  for (const entry of fs.readdirSync(buildDirectory, { withFileTypes: true })) {
     if (!entry.isFile()) continue;
     if (!looksLikeExecutable(entry.name, platform)) continue;
-    const src = path.join(buildFolder, entry.name);
+    const src = path.join(buildDirectory, entry.name);
     if (!isProbablyExecutableFile(src, platform)) continue;
     const dst = path.join(outputDirectory, entry.name);
     log(`Copying executable: ${entry.name}`);
@@ -189,15 +206,15 @@ function isProbablyExecutableFile(
 }
 
 function copyResourceBundles(
-  buildFolder: string,
+  buildDirectory: string,
   outputDirectory: string,
   log: (msg: string) => void,
 ): string[] {
   const copied: string[] = [];
-  for (const entry of fs.readdirSync(buildFolder, { withFileTypes: true })) {
+  for (const entry of fs.readdirSync(buildDirectory, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue;
     if (!entry.name.endsWith(".resources") && !entry.name.endsWith(".bundle")) continue;
-    const src = path.join(buildFolder, entry.name);
+    const src = path.join(buildDirectory, entry.name);
     const dst = path.join(outputDirectory, entry.name);
     log(`Copying resource bundle: ${entry.name}`);
     copyDirRecursive(src, dst);
@@ -206,15 +223,22 @@ function copyResourceBundles(
   return copied;
 }
 
+/**
+ * Recursively copy a directory. Symbolic links are de-referenced and the
+ * pointed-to file (or directory) is copied as a regular file: re-creating
+ * the symlink would require admin privileges on Windows and would also
+ * leave the bundle dependent on the absolute path the link encodes.
+ */
 function copyDirRecursive(src: string, dst: string): void {
   fs.mkdirSync(dst, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
     const s = path.join(src, entry.name);
     const d = path.join(dst, entry.name);
-    if (entry.isDirectory()) {
+    // `entry.isDirectory()` returns false for a symlink-to-directory, so
+    // we use `fs.statSync` (which follows links) to make the right call.
+    const stat = fs.statSync(s);
+    if (stat.isDirectory()) {
       copyDirRecursive(s, d);
-    } else if (entry.isSymbolicLink()) {
-      fs.symlinkSync(fs.readlinkSync(s), d);
     } else {
       fs.copyFileSync(s, d);
     }
@@ -228,7 +252,7 @@ function copyDirRecursive(src: string, dst: string): void {
 interface WindowsClosureCtx {
   entry: string;
   bundleDir: string;
-  buildFolder: string;
+  buildDirectory: string;
   pathDirs: string[];
   runReadobj?: RunReadobj;
   visited: Set<string>;
@@ -270,7 +294,7 @@ function resolveWindowsDll(name: string, ctx: WindowsClosureCtx): string | null 
   // Build products sitting next to the executable are always kept.
   const localBundle = path.join(ctx.bundleDir, name);
   if (fs.existsSync(localBundle)) return localBundle;
-  const localBuild = path.join(ctx.buildFolder, name);
+  const localBuild = path.join(ctx.buildDirectory, name);
   if (fs.existsSync(localBuild)) {
     // Stage it into the bundle so the closure walk is consistent.
     const dst = path.join(ctx.bundleDir, name);
@@ -295,8 +319,10 @@ function resolveWindowsDll(name: string, ctx: WindowsClosureCtx): string | null 
 
 interface LinuxClosureCtx {
   entry: string;
+  /** True when `entry` is a root executable from the build directory; false for libraries discovered transitively. */
+  isRoot: boolean;
   bundleDir: string;
-  buildFolder: string;
+  buildDirectory: string;
   runLdd?: RunLdd;
   visited: Set<string>;
   out: string[];
@@ -308,8 +334,17 @@ function copyLinuxSoClosure(ctx: LinuxClosureCtx): void {
   try {
     entries = getSoDependencies(ctx.entry, ctx.runLdd);
   } catch (err) {
-    // `ldd` refuses to run on non-ELF files (e.g. shell wrappers); such
-    // inputs can't have a dynamic closure.
+    // For root executables an `ldd` failure is fatal: a corrupt input,
+    // a missing read permission, or `ldd` not being on PATH would
+    // otherwise silently produce a bundle without any libraries and
+    // mislead the user. For transitively-discovered libraries, log and
+    // skip; e.g. `ldd` refuses to run on non-ELF blobs (shell wrappers,
+    // linker scripts) which cannot have a dynamic closure of their own.
+    if (ctx.isRoot) {
+      throw new Error(
+        `ldd failed on root executable '${ctx.entry}': ${(err as Error).message}`,
+      );
+    }
     ctx.log(`Skipping non-ELF or broken ELF: ${ctx.entry} (${(err as Error).message})`);
     return;
   }
@@ -328,7 +363,7 @@ function copyLinuxSoClosure(ctx: LinuxClosureCtx): void {
     }
 
     // Build products next to the executable are kept in place.
-    const localBuild = path.join(ctx.buildFolder, soname);
+    const localBuild = path.join(ctx.buildDirectory, soname);
     const sourceForCopy = fs.existsSync(localBuild) ? localBuild : resolvedPath;
 
     const dest = path.join(ctx.bundleDir, soname);
@@ -344,6 +379,7 @@ function copyLinuxSoClosure(ctx: LinuxClosureCtx): void {
     // `$ORIGIN` resolve relative to the file's location, and the bundle
     // is still being assembled so sibling deps are not yet present
     // there. Walking the toolchain copy keeps rpath resolution stable.
-    copyLinuxSoClosure({ ...ctx, entry: sourceForCopy });
+    // See the file-level comment for the matching Windows rationale.
+    copyLinuxSoClosure({ ...ctx, entry: sourceForCopy, isRoot: false });
   }
 }

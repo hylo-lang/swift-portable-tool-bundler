@@ -117,6 +117,21 @@ function isAllowedLinuxSo(fileName) {
 // SPDX short identifier: Apache-2.0
 //
 // Orchestrates assembling a portable bundle from a Swift build directory.
+//
+// Closure-walk recursion-target rule (subtle but important):
+//
+// * Windows / PE — imports are resolved by *name* (no rpath concept), so
+//   after copying a DLL into the bundle we recurse on the **bundled copy**.
+//   This keeps the walk anchored to the final layout and lets test stubs
+//   reason exclusively about bundle-local paths.
+//
+// * Linux / ELF — DT_RUNPATH entries (commonly `$ORIGIN`) resolve relative
+//   to the file's location at the time `ld.so` reads it. The bundle is
+//   still being assembled so siblings are not yet present there; we must
+//   recurse on the **toolchain source path** so rpath stays valid.
+//
+// Any future change that touches the recursion target needs to preserve
+// this asymmetry. There are dedicated regression tests for both branches.
 var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
     if (k2 === undefined) k2 = k;
     var desc = Object.getOwnPropertyDescriptor(m, k);
@@ -152,6 +167,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.bundle = bundle;
+exports.splitPath = splitPath;
 const fs = __importStar(__nccwpck_require__(9896));
 const path = __importStar(__nccwpck_require__(6928));
 const allowlist_1 = __nccwpck_require__(2767);
@@ -160,7 +176,7 @@ const windows_deps_1 = __nccwpck_require__(6978);
 const linux_deps_1 = __nccwpck_require__(8975);
 /**
  * Produce a portable bundle. Copies the allow-listed subset of
- * `buildFolder` into `outputDirectory`:
+ * `buildDirectory` into `outputDirectory`:
  *
  * 1. Every executable (`*.exe` on Windows; any extensionless regular file
  *    on Linux/macOS) is copied verbatim.
@@ -173,32 +189,32 @@ const linux_deps_1 = __nccwpck_require__(8975);
  *    into the bundle. On macOS no dylibs are bundled (the Swift runtime
  *    ships with the OS).
  *
- * Anything else in the build folder — SwiftPM build metadata, import
+ * Anything else in the build directory — SwiftPM build metadata, import
  * libraries, intermediate object directories, etc. — is ignored.
  */
 function bundle(opts) {
     const platform = opts.platform ?? (0, platform_1.currentPlatform)();
     const log = opts.log ?? ((msg) => console.log(msg));
-    const buildFolder = path.resolve(opts.buildFolder);
+    const buildDirectory = path.resolve(opts.buildDirectory);
     const outputDirectory = path.resolve(opts.outputDirectory);
-    if (!fs.existsSync(buildFolder) || !fs.statSync(buildFolder).isDirectory()) {
-        throw new Error(`build-directory does not exist or is not a directory: ${buildFolder}`);
+    if (!fs.existsSync(buildDirectory) || !fs.statSync(buildDirectory).isDirectory()) {
+        throw new Error(`build-directory does not exist or is not a directory: ${buildDirectory}`);
     }
     fs.mkdirSync(outputDirectory, { recursive: true });
-    const executablePaths = copyExecutables(buildFolder, outputDirectory, platform, log);
+    const executablePaths = copyExecutables(buildDirectory, outputDirectory, platform, log);
     if (executablePaths.length === 0) {
-        throw new Error(`No executables found in build-directory: ${buildFolder}. ` +
+        throw new Error(`No executables found in build-directory: ${buildDirectory}. ` +
             `Nothing to bundle.`);
     }
-    const resourceBundlePaths = copyResourceBundles(buildFolder, outputDirectory, log);
+    const resourceBundlePaths = copyResourceBundles(buildDirectory, outputDirectory, log);
     const libraryPaths = [];
     if (platform === "windows") {
-        const pathDirs = opts.pathDirs ?? splitPath(process.env.PATH ?? "");
+        const pathDirs = opts.pathDirs ?? splitPath(process.env.PATH ?? "", platform);
         for (const exe of executablePaths) {
             copyWindowsDllClosure({
                 entry: exe,
                 bundleDir: outputDirectory,
-                buildFolder,
+                buildDirectory,
                 pathDirs,
                 runReadobj: opts.runReadobj,
                 visited: new Set(),
@@ -211,8 +227,9 @@ function bundle(opts) {
         for (const exe of executablePaths) {
             copyLinuxSoClosure({
                 entry: exe,
+                isRoot: true,
                 bundleDir: outputDirectory,
-                buildFolder,
+                buildDirectory,
                 runLdd: opts.runLdd,
                 visited: new Set(),
                 out: libraryPaths,
@@ -228,18 +245,19 @@ function bundle(opts) {
         libraryPaths,
     };
 }
-function splitPath(p) {
-    const sep = process.platform === "win32" ? ";" : ":";
+/** Splits an OS-style PATH list using the separator appropriate for `platform`. */
+function splitPath(p, platform) {
+    const sep = platform === "windows" ? ";" : ":";
     return p.split(sep).filter((s) => s.length > 0);
 }
-function copyExecutables(buildFolder, outputDirectory, platform, log) {
+function copyExecutables(buildDirectory, outputDirectory, platform, log) {
     const copied = [];
-    for (const entry of fs.readdirSync(buildFolder, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(buildDirectory, { withFileTypes: true })) {
         if (!entry.isFile())
             continue;
         if (!(0, platform_1.looksLikeExecutable)(entry.name, platform))
             continue;
-        const src = path.join(buildFolder, entry.name);
+        const src = path.join(buildDirectory, entry.name);
         if (!isProbablyExecutableFile(src, platform))
             continue;
         const dst = path.join(outputDirectory, entry.name);
@@ -292,14 +310,14 @@ function isProbablyExecutableFile(absPath, platform) {
             fs.closeSync(fd);
     }
 }
-function copyResourceBundles(buildFolder, outputDirectory, log) {
+function copyResourceBundles(buildDirectory, outputDirectory, log) {
     const copied = [];
-    for (const entry of fs.readdirSync(buildFolder, { withFileTypes: true })) {
+    for (const entry of fs.readdirSync(buildDirectory, { withFileTypes: true })) {
         if (!entry.isDirectory())
             continue;
         if (!entry.name.endsWith(".resources") && !entry.name.endsWith(".bundle"))
             continue;
-        const src = path.join(buildFolder, entry.name);
+        const src = path.join(buildDirectory, entry.name);
         const dst = path.join(outputDirectory, entry.name);
         log(`Copying resource bundle: ${entry.name}`);
         copyDirRecursive(src, dst);
@@ -307,16 +325,22 @@ function copyResourceBundles(buildFolder, outputDirectory, log) {
     }
     return copied;
 }
+/**
+ * Recursively copy a directory. Symbolic links are de-referenced and the
+ * pointed-to file (or directory) is copied as a regular file: re-creating
+ * the symlink would require admin privileges on Windows and would also
+ * leave the bundle dependent on the absolute path the link encodes.
+ */
 function copyDirRecursive(src, dst) {
     fs.mkdirSync(dst, { recursive: true });
     for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
         const s = path.join(src, entry.name);
         const d = path.join(dst, entry.name);
-        if (entry.isDirectory()) {
+        // `entry.isDirectory()` returns false for a symlink-to-directory, so
+        // we use `fs.statSync` (which follows links) to make the right call.
+        const stat = fs.statSync(s);
+        if (stat.isDirectory()) {
             copyDirRecursive(s, d);
-        }
-        else if (entry.isSymbolicLink()) {
-            fs.symlinkSync(fs.readlinkSync(s), d);
         }
         else {
             fs.copyFileSync(s, d);
@@ -353,7 +377,7 @@ function resolveWindowsDll(name, ctx) {
     const localBundle = path.join(ctx.bundleDir, name);
     if (fs.existsSync(localBundle))
         return localBundle;
-    const localBuild = path.join(ctx.buildFolder, name);
+    const localBuild = path.join(ctx.buildDirectory, name);
     if (fs.existsSync(localBuild)) {
         // Stage it into the bundle so the closure walk is consistent.
         const dst = path.join(ctx.bundleDir, name);
@@ -376,8 +400,15 @@ function copyLinuxSoClosure(ctx) {
         entries = (0, linux_deps_1.getSoDependencies)(ctx.entry, ctx.runLdd);
     }
     catch (err) {
-        // `ldd` refuses to run on non-ELF files (e.g. shell wrappers); such
-        // inputs can't have a dynamic closure.
+        // For root executables an `ldd` failure is fatal: a corrupt input,
+        // a missing read permission, or `ldd` not being on PATH would
+        // otherwise silently produce a bundle without any libraries and
+        // mislead the user. For transitively-discovered libraries, log and
+        // skip; e.g. `ldd` refuses to run on non-ELF blobs (shell wrappers,
+        // linker scripts) which cannot have a dynamic closure of their own.
+        if (ctx.isRoot) {
+            throw new Error(`ldd failed on root executable '${ctx.entry}': ${err.message}`);
+        }
         ctx.log(`Skipping non-ELF or broken ELF: ${ctx.entry} (${err.message})`);
         return;
     }
@@ -392,7 +423,7 @@ function copyLinuxSoClosure(ctx) {
             throw new Error(`ldd could not resolve allow-listed library '${soname}' for ${ctx.entry}.`);
         }
         // Build products next to the executable are kept in place.
-        const localBuild = path.join(ctx.buildFolder, soname);
+        const localBuild = path.join(ctx.buildDirectory, soname);
         const sourceForCopy = fs.existsSync(localBuild) ? localBuild : resolvedPath;
         const dest = path.join(ctx.bundleDir, soname);
         if (path.resolve(sourceForCopy) !== path.resolve(dest)) {
@@ -406,7 +437,8 @@ function copyLinuxSoClosure(ctx) {
         // `$ORIGIN` resolve relative to the file's location, and the bundle
         // is still being assembled so sibling deps are not yet present
         // there. Walking the toolchain copy keeps rpath resolution stable.
-        copyLinuxSoClosure({ ...ctx, entry: sourceForCopy });
+        // See the file-level comment for the matching Windows rationale.
+        copyLinuxSoClosure({ ...ctx, entry: sourceForCopy, isRoot: false });
     }
 }
 //# sourceMappingURL=bundler.js.map
@@ -430,6 +462,8 @@ const child_process_1 = __nccwpck_require__(5317);
 const defaultLdd = (modulePath) => (0, child_process_1.execFileSync)("ldd", [modulePath], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    // Hard cap so a wedged or hung ldd cannot stall a CI run.
+    timeout: 30_000,
 });
 exports.defaultLdd = defaultLdd;
 /**
@@ -556,16 +590,16 @@ const bundler_1 = __nccwpck_require__(3940);
  */
 async function main(overrides) {
     try {
-        const buildFolder = overrides?.buildFolder ??
+        const buildDirectory = overrides?.buildDirectory ??
             core.getInput("build-directory", { required: true });
         const outputDirectory = overrides?.outputDirectory ??
             core.getInput("output-directory", { required: true });
-        core.info(`build-directory: ${buildFolder}`);
+        core.info(`build-directory: ${buildDirectory}`);
         core.info(`output-directory: ${outputDirectory}`);
         const result = await core.group("Bundling portable tool", async () => {
             return (0, bundler_1.bundle)({
                 ...overrides,
-                buildFolder,
+                buildDirectory,
                 outputDirectory,
                 log: overrides?.log ?? ((m) => core.info(m)),
             });
@@ -608,6 +642,8 @@ const child_process_1 = __nccwpck_require__(5317);
 const defaultReadobj = (args) => (0, child_process_1.execFileSync)("llvm-readobj", args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    // Hard cap so a wedged or hung llvm-readobj cannot stall a CI run.
+    timeout: 30_000,
 });
 exports.defaultReadobj = defaultReadobj;
 /**
@@ -618,17 +654,17 @@ exports.defaultReadobj = defaultReadobj;
  * reliable indicator that either the input is not a PE file or the tool
  * failed silently.
  */
-function parseCoffImports(output, module) {
+function parseCoffImports(output, modulePath) {
     const chunks = output.split(/Import\s*\{/);
     if (chunks.length < 2) {
-        throw new Error(`llvm-readobj produced no Import sections for '${module}'. Output was:\n${output}`);
+        throw new Error(`llvm-readobj produced no Import sections for '${modulePath}'. Output was:\n${output}`);
     }
     const deps = [];
     const nameRe = /^\s*Name:\s*(\S+)\s*$/m;
     for (let i = 1; i < chunks.length; i++) {
         const m = nameRe.exec(chunks[i]);
         if (!m) {
-            throw new Error(`Could not find 'Name:' field in Import block #${i} of '${module}'. Block was:\n${chunks[i]}`);
+            throw new Error(`Could not find 'Name:' field in Import block #${i} of '${modulePath}'. Block was:\n${chunks[i]}`);
         }
         deps.push(m[1]);
     }

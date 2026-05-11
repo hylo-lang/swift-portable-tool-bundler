@@ -11,6 +11,8 @@ export const defaultLdd: RunLdd = (modulePath) =>
   execFileSync("ldd", [modulePath], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    // Hard cap so a wedged or hung ldd cannot stall a CI run.
+    timeout: 30_000,
   });
 
 export interface LddEntry {
