@@ -1,7 +1,5 @@
 # swift-portable-tool-bundler
 
-[![CI](https://github.com/hylo-lang/swift-portable-tool-bundler/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/hylo-lang/swift-portable-tool-bundler/actions/workflows/ci.yml)
-
 A GitHub Action (and Node.js library) that turns a Swift build output directory
 into a portable, self-contained bundle: the executable plus only the files
 actually needed to run it on a machine without the Swift toolchain or the
