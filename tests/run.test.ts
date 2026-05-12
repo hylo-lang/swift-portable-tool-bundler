@@ -26,6 +26,19 @@ function writeFakeElf(p: string): void {
   fs.chmodSync(p, 0o755);
 }
 
+/** Minimal package description JSON with one executable product. */
+function fakePackageJson(name: string): string {
+  return JSON.stringify({
+    name,
+    products: [
+      { name, targets: [name], type: { executable: null } },
+    ],
+    targets: [
+      { name, type: "executable" },
+    ],
+  });
+}
+
 describe("run.main()", () => {
   let setFailed: jest.SpyInstance;
   let setOutput: jest.SpyInstance;
@@ -47,10 +60,17 @@ describe("run.main()", () => {
     writeFakeElf(path.join(build, "hello"));
 
     const result = await main({
+      products: ["hello"],
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: () => "",
+      runSwiftCommand: (args) => {
+        if (args[0] === "package") return fakePackageJson("hello");
+        if (args[0] === "build") return build + "\n";
+        throw new Error(`unexpected swift args: ${args}`);
+      },
       log: () => {},
     });
 
@@ -66,9 +86,16 @@ describe("run.main()", () => {
   test("calls setFailed with a clear message when build-directory does not exist", async () => {
     const out = tempDir("fail-out");
     const result = await main({
+      products: ["hello"],
       buildDirectory: "/definitely/does/not/exist",
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
+      runSwiftCommand: (args) => {
+        if (args[0] === "package") return fakePackageJson("hello");
+        if (args[0] === "build") return "/definitely/does/not/exist\n";
+        throw new Error(`unexpected swift args: ${args}`);
+      },
     });
     expect(result).toBeUndefined();
     expect(setFailed).toHaveBeenCalledTimes(1);
@@ -83,14 +110,23 @@ describe("run.main()", () => {
     const getInput = jest
       .spyOn(core, "getInput")
       .mockImplementation((name: string) => {
-        if (name === "build-directory") return build;
+        if (name === "products") return "hello";
         if (name === "output-directory") return out;
+        if (name === "source-directory") return ".";
+        if (name === "config") return "release";
         return "";
       });
 
     await main({
+      buildDirectory: build,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: () => "",
+      runSwiftCommand: (args) => {
+        if (args[0] === "package") return fakePackageJson("hello");
+        if (args[0] === "build") return build + "\n";
+        throw new Error(`unexpected swift args: ${args}`);
+      },
       log: () => {},
     });
 
@@ -99,13 +135,17 @@ describe("run.main()", () => {
     getInput.mockRestore();
   });
 
-  test("fails fast when the required 'build-directory' input is absent", async () => {
+  test("fails fast when no products are provided", async () => {
     const getInput = jest
       .spyOn(core, "getInput")
-      .mockImplementation(() => "");
+      .mockImplementation((name: string) => {
+        if (name === "products") return "";
+        if (name === "output-directory") return "/tmp/out";
+        return "";
+      });
     await main();
     expect(setFailed).toHaveBeenCalledTimes(1);
-    expect(setFailed.mock.calls[0][0]).toMatch(/build-directory/);
+    expect(setFailed.mock.calls[0][0]).toMatch(/No product names provided/);
     getInput.mockRestore();
   });
 });

@@ -101,19 +101,11 @@ jobs:
         shell: pwsh
         run: swift build -c release --product hello ${{ steps.flags.outputs.extra }}
 
-      - name: Locate bin path
-        id: locate
-        working-directory: examples/hello
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $bin = (swift build -c release --product hello ${{ steps.flags.outputs.extra }} --show-bin-path).Trim()
-          "bin_path=$bin" >> $env:GITHUB_OUTPUT
-
       - name: Run swift-portable-tool-bundler
         uses: ./
         with:
-          build-directory: ${{ steps.locate.outputs.bin_path }}
+          products: hello
+          source-directory: examples/hello
           output-directory: ${{ runner.temp }}/bundle
 
       - name: List bundle contents

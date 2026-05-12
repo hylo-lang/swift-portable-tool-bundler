@@ -21,7 +21,7 @@ import * as fs from "fs";
 import * as path from "path";
 
 import { isAllowedLinuxSo, isAllowedWindowsDll } from "./allowlist";
-import { currentPlatform, looksLikeExecutable, Platform } from "./platform";
+import { currentPlatform, Platform } from "./platform";
 import { getDllDependencies, RunReadobj } from "./windows-deps";
 import { getSoDependencies, LddEntry, RunLdd } from "./linux-deps";
 
@@ -30,6 +30,8 @@ export interface BundleOptions {
   buildDirectory: string;
   /** Destination bundle directory. Created if missing. */
   outputDirectory: string;
+  /** Executable target names to bundle (resolved from product names). */
+  executableNames: string[];
   /** Override the detected platform (for testing). */
   platform?: Platform;
   /** Injectable PATH lookup, for testing. */
@@ -57,8 +59,8 @@ export interface BundleResult {
  * Produce a portable bundle. Copies the allow-listed subset of
  * `buildDirectory` into `outputDirectory`:
  *
- * 1. Every executable (`*.exe` on Windows; any extensionless regular file
- *    on Linux/macOS) is copied verbatim.
+ * 1. The named executable targets (from `executableNames`) are copied
+ *    verbatim (`*.exe` on Windows; bare name on Linux/macOS).
  * 2. Every `*.resources` and `*.bundle` directory is copied verbatim so
  *    SwiftPM's generated `Bundle.module` accessor can still find resources
  *    next to the executable.
@@ -75,6 +77,11 @@ export function bundle(opts: BundleOptions): BundleResult {
   const platform = opts.platform ?? currentPlatform();
   const log = opts.log ?? ((msg: string) => console.log(msg));
 
+  const { executableNames } = opts;
+  if (executableNames.length === 0) {
+    throw new Error("executableNames must not be empty.");
+  }
+
   const buildDirectory = path.resolve(opts.buildDirectory);
   const outputDirectory = path.resolve(opts.outputDirectory);
 
@@ -84,13 +91,13 @@ export function bundle(opts: BundleOptions): BundleResult {
 
   fs.mkdirSync(outputDirectory, { recursive: true });
 
-  const executablePaths = copyExecutables(buildDirectory, outputDirectory, platform, log);
-  if (executablePaths.length === 0) {
-    throw new Error(
-      `No executables found in build-directory: ${buildDirectory}. ` +
-        `Nothing to bundle.`,
-    );
-  }
+  const executablePaths = copyExecutables(
+    buildDirectory,
+    outputDirectory,
+    executableNames,
+    platform,
+    log,
+  );
 
   const resourceBundlePaths = copyResourceBundles(buildDirectory, outputDirectory, log);
 
@@ -142,17 +149,21 @@ export function splitPath(p: string, platform: Platform): string[] {
 function copyExecutables(
   buildDirectory: string,
   outputDirectory: string,
+  executableNames: string[],
   platform: Platform,
   log: (msg: string) => void,
 ): string[] {
   const copied: string[] = [];
-  for (const entry of fs.readdirSync(buildDirectory, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
-    if (!looksLikeExecutable(entry.name, platform)) continue;
-    const src = path.join(buildDirectory, entry.name);
-    if (!isProbablyExecutableFile(src, platform)) continue;
-    const dst = path.join(outputDirectory, entry.name);
-    log(`Copying executable: ${entry.name}`);
+  for (const name of executableNames) {
+    const fileName = platform === "windows" ? `${name}.exe` : name;
+    const src = path.join(buildDirectory, fileName);
+    if (!fs.existsSync(src)) {
+      throw new Error(
+        `Executable '${fileName}' not found in build directory: ${buildDirectory}`,
+      );
+    }
+    const dst = path.join(outputDirectory, fileName);
+    log(`Copying executable: ${fileName}`);
     fs.copyFileSync(src, dst);
     if (platform !== "windows") fs.chmodSync(dst, 0o755);
     copied.push(dst);
@@ -166,43 +177,6 @@ function copyExecutables(
     }
   }
   return copied;
-}
-
-/**
- * Fast, magic-number based executable detection. Avoids treating scripts,
- * text files, or random artifacts as executables just because they lack an
- * extension.
- */
-function isProbablyExecutableFile(
-  absPath: string,
-  platform: Platform,
-): boolean {
-  let fd: number | undefined;
-  try {
-    fd = fs.openSync(absPath, "r");
-    const buf = Buffer.alloc(4);
-    fs.readSync(fd, buf, 0, 4, 0);
-    if (platform === "windows") {
-      return buf[0] === 0x4d && buf[1] === 0x5a; // "MZ"
-    }
-    if (platform === "linux") {
-      return buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46; // "\x7fELF"
-    }
-    // macOS Mach-O: any of several magic numbers.
-    const magic = buf.readUInt32LE(0);
-    return (
-      magic === 0xfeedface ||
-      magic === 0xcefaedfe ||
-      magic === 0xfeedfacf ||
-      magic === 0xcffaedfe ||
-      magic === 0xcafebabe ||
-      magic === 0xbebafeca
-    );
-  } catch {
-    return false;
-  } finally {
-    if (fd !== undefined) fs.closeSync(fd);
-  }
 }
 
 function copyResourceBundles(

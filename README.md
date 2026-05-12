@@ -1,15 +1,17 @@
 # swift-portable-tool-bundler
 
-A GitHub Action (and Node.js library) that turns a Swift build output directory
-into a portable, self-contained bundle: the executable plus only the files
-actually needed to run it on a machine without the Swift toolchain or the
-Visual C++ runtime installed.
+A GitHub Action (and Node.js library) that turns a Swift package's built
+executable products into a portable, self-contained bundle: the executable plus
+only the files actually needed to run it on a machine without the Swift
+toolchain or the Visual C++ runtime installed.
 
 The intended workflow is:
 
 1. `swift build -c release --product my-tool`
-2. Run this action with the build's bin path as the input; it produces an output directory containing:
-   - The executable(s).
+2. Run this action specifying the product name(s); it parses the package
+   description, resolves the executable targets, and produces an output
+   directory containing:
+   - The named executable(s).
    - Every SwiftPM resource bundle (`*.resources` and `*.bundle` directories
      are copied).
    - The transitive closure of allow-listed runtime dynamic libraries
@@ -22,10 +24,12 @@ The intended workflow is:
 
 ## Inputs
 
-| Input | Required | Description |
-|---|---|---|
-| `build-directory` | yes | Path to the Swift build output directory (typically `swift build --show-bin-path -c release --product <name>`). |
-| `output-directory` | yes | Where to place the portable bundle. Created if it does not exist. |
+| Input | Required | Default | Description |
+|---|---|---|---|
+| `products` | yes | — | Newline-separated list of executable product names to bundle. |
+| `source-directory` | no | `.` | Path to the Swift package root (where `Package.swift` lives). |
+| `config` | no | `release` | Build configuration (`debug` or `release`). |
+| `output-directory` | yes | — | Where to place the portable bundle. Created if it does not exist. |
 
 ## Outputs
 
@@ -56,17 +60,10 @@ The intended workflow is:
   run: swift build -c release --product my-tool
   shell: pwsh
 
-- name: Locate bin path
-  id: locate
-  shell: pwsh
-  run: |
-    $bin = (swift build -c release --product my-tool --show-bin-path).Trim()
-    "bin_path=$bin" >> $env:GITHUB_OUTPUT
-
 - name: Assemble portable bundle
   uses: hylo-lang/swift-portable-tool-bundler@v1
   with:
-    build-directory: ${{ steps.locate.outputs.bin_path }}
+    products: my-tool
     output-directory: ${{ runner.temp }}/my-tool-bundle
 
 - name: Archive
