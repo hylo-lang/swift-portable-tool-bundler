@@ -178,8 +178,8 @@ const linux_deps_1 = __nccwpck_require__(8975);
  * Produce a portable bundle. Copies the allow-listed subset of
  * `buildDirectory` into `outputDirectory`:
  *
- * 1. Every executable (`*.exe` on Windows; any extensionless regular file
- *    on Linux/macOS) is copied verbatim.
+ * 1. The named executable targets (from `executableNames`) are copied
+ *    verbatim (`*.exe` on Windows; bare name on Linux/macOS).
  * 2. Every `*.resources` and `*.bundle` directory is copied verbatim so
  *    SwiftPM's generated `Bundle.module` accessor can still find resources
  *    next to the executable.
@@ -195,17 +195,17 @@ const linux_deps_1 = __nccwpck_require__(8975);
 function bundle(opts) {
     const platform = opts.platform ?? (0, platform_1.currentPlatform)();
     const log = opts.log ?? ((msg) => console.log(msg));
+    const { executableNames } = opts;
+    if (executableNames.length === 0) {
+        throw new Error("executableNames must not be empty.");
+    }
     const buildDirectory = path.resolve(opts.buildDirectory);
     const outputDirectory = path.resolve(opts.outputDirectory);
     if (!fs.existsSync(buildDirectory) || !fs.statSync(buildDirectory).isDirectory()) {
         throw new Error(`build-directory does not exist or is not a directory: ${buildDirectory}`);
     }
     fs.mkdirSync(outputDirectory, { recursive: true });
-    const executablePaths = copyExecutables(buildDirectory, outputDirectory, platform, log);
-    if (executablePaths.length === 0) {
-        throw new Error(`No executables found in build-directory: ${buildDirectory}. ` +
-            `Nothing to bundle.`);
-    }
+    const executablePaths = copyExecutables(buildDirectory, outputDirectory, executableNames, platform, log);
     const resourceBundlePaths = copyResourceBundles(buildDirectory, outputDirectory, log);
     const libraryPaths = [];
     if (platform === "windows") {
@@ -250,18 +250,16 @@ function splitPath(p, platform) {
     const sep = platform === "windows" ? ";" : ":";
     return p.split(sep).filter((s) => s.length > 0);
 }
-function copyExecutables(buildDirectory, outputDirectory, platform, log) {
+function copyExecutables(buildDirectory, outputDirectory, executableNames, platform, log) {
     const copied = [];
-    for (const entry of fs.readdirSync(buildDirectory, { withFileTypes: true })) {
-        if (!entry.isFile())
-            continue;
-        if (!(0, platform_1.looksLikeExecutable)(entry.name, platform))
-            continue;
-        const src = path.join(buildDirectory, entry.name);
-        if (!isProbablyExecutableFile(src, platform))
-            continue;
-        const dst = path.join(outputDirectory, entry.name);
-        log(`Copying executable: ${entry.name}`);
+    for (const name of executableNames) {
+        const fileName = platform === "windows" ? `${name}.exe` : name;
+        const src = path.join(buildDirectory, fileName);
+        if (!fs.existsSync(src)) {
+            throw new Error(`Executable '${fileName}' not found in build directory: ${buildDirectory}`);
+        }
+        const dst = path.join(outputDirectory, fileName);
+        log(`Copying executable: ${fileName}`);
         fs.copyFileSync(src, dst);
         if (platform !== "windows")
             fs.chmodSync(dst, 0o755);
@@ -275,40 +273,6 @@ function copyExecutables(buildDirectory, outputDirectory, platform, log) {
         }
     }
     return copied;
-}
-/**
- * Fast, magic-number based executable detection. Avoids treating scripts,
- * text files, or random artifacts as executables just because they lack an
- * extension.
- */
-function isProbablyExecutableFile(absPath, platform) {
-    let fd;
-    try {
-        fd = fs.openSync(absPath, "r");
-        const buf = Buffer.alloc(4);
-        fs.readSync(fd, buf, 0, 4, 0);
-        if (platform === "windows") {
-            return buf[0] === 0x4d && buf[1] === 0x5a; // "MZ"
-        }
-        if (platform === "linux") {
-            return buf[0] === 0x7f && buf[1] === 0x45 && buf[2] === 0x4c && buf[3] === 0x46; // "\x7fELF"
-        }
-        // macOS Mach-O: any of several magic numbers.
-        const magic = buf.readUInt32LE(0);
-        return (magic === 0xfeedface ||
-            magic === 0xcefaedfe ||
-            magic === 0xfeedfacf ||
-            magic === 0xcffaedfe ||
-            magic === 0xcafebabe ||
-            magic === 0xbebafeca);
-    }
-    catch {
-        return false;
-    }
-    finally {
-        if (fd !== undefined)
-            fs.closeSync(fd);
-    }
 }
 function copyResourceBundles(buildDirectory, outputDirectory, log) {
     const copied = [];
@@ -501,7 +465,6 @@ function getSoDependencies(modulePath, run = exports.defaultLdd) {
 // SPDX short identifier: Apache-2.0
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.currentPlatform = currentPlatform;
-exports.looksLikeExecutable = looksLikeExecutable;
 function currentPlatform() {
     switch (process.platform) {
         case "linux":
@@ -513,25 +476,6 @@ function currentPlatform() {
         default:
             throw new Error(`Unsupported platform: ${process.platform}`);
     }
-}
-/**
- * Returns true if the given file name looks like an executable on the given
- * platform. Used to auto-discover the set of entry points whose dynamic
- * library closure must be bundled.
- *
- * - Windows: `*.exe`
- * - Linux/macOS: anything without an extension, and not a known library
- *   suffix (`.so*`, `.dylib`, `.a`).
- *
- * The caller is expected to have confirmed that the path is a regular file.
- */
-function looksLikeExecutable(fileName, platform) {
-    if (platform === "windows") {
-        return fileName.toLowerCase().endsWith(".exe");
-    }
-    if (/\.(so(\.\d+)*|dylib|a)$/.test(fileName))
-        return false;
-    return !fileName.includes(".");
 }
 //# sourceMappingURL=platform.js.map
 
@@ -580,27 +524,51 @@ Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.main = main;
 const core = __importStar(__nccwpck_require__(7484));
 const bundler_1 = __nccwpck_require__(3940);
+const swift_package_1 = __nccwpck_require__(1736);
 /**
  * Reads the action inputs and runs a bundle. Exposed for testing; the
  * thin `src/action.ts` bootstrap is what the compiled `dist/index.js`
  * actually invokes at runtime.
  *
  * An optional override can be supplied to inject a pre-built
- * `BundleOptions` (typically from a test) without consulting `core.getInput`.
+ * `MainOverrides` (typically from a test) without consulting `core.getInput`.
  */
 async function main(overrides) {
     try {
-        const buildDirectory = overrides?.buildDirectory ??
-            core.getInput("build-directory", { required: true });
+        const products = overrides?.products ??
+            parseNewlineSeparated(core.getInput("products", { required: true }));
+        const sourceDirectory = overrides?.sourceDirectory ??
+            (core.getInput("source-directory") || ".");
+        const config = overrides?.config ?? (core.getInput("config") || "release");
         const outputDirectory = overrides?.outputDirectory ??
             core.getInput("output-directory", { required: true });
-        core.info(`build-directory: ${buildDirectory}`);
+        if (products.length === 0) {
+            throw new Error("No product names provided in the 'products' input.");
+        }
+        core.info(`source-directory: ${sourceDirectory}`);
+        core.info(`config: ${config}`);
+        core.info(`products: ${products.join(", ")}`);
         core.info(`output-directory: ${outputDirectory}`);
+        const runCmd = overrides?.runSwiftCommand ?? swift_package_1.defaultRunSwiftCommand;
+        const description = await core.group("Parsing package description", async () => {
+            const desc = (0, swift_package_1.getPackageDescription)(sourceDirectory, runCmd);
+            core.info(`Package: ${desc.name} (${desc.products.length} products, ${desc.targets.length} targets)`);
+            return desc;
+        });
+        const executableNames = overrides?.executableNames ?? (0, swift_package_1.resolveExecutableNames)(description, products);
+        core.info(`Executable targets: ${executableNames.join(", ")}`);
+        const buildDirectory = overrides?.buildDirectory ??
+            (0, swift_package_1.getBuildBinPath)(sourceDirectory, config, runCmd);
+        core.info(`build-directory (resolved): ${buildDirectory}`);
         const result = await core.group("Bundling portable tool", async () => {
             return (0, bundler_1.bundle)({
-                ...overrides,
                 buildDirectory,
                 outputDirectory,
+                executableNames,
+                platform: overrides?.platform,
+                pathDirs: overrides?.pathDirs,
+                runReadobj: overrides?.runReadobj,
+                runLdd: overrides?.runLdd,
                 log: overrides?.log ?? ((m) => core.info(m)),
             });
         });
@@ -620,7 +588,83 @@ async function main(overrides) {
         return undefined;
     }
 }
+/** Splits a newline-separated input into trimmed, non-empty strings. */
+function parseNewlineSeparated(input) {
+    return input
+        .split("\n")
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
+}
 //# sourceMappingURL=run.js.map
+
+/***/ }),
+
+/***/ 1736:
+/***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
+
+"use strict";
+
+// SPDX short identifier: Apache-2.0
+//
+// Helpers for invoking SwiftPM commands and parsing package descriptions.
+Object.defineProperty(exports, "__esModule", ({ value: true }));
+exports.defaultRunSwiftCommand = void 0;
+exports.getPackageDescription = getPackageDescription;
+exports.getBuildBinPath = getBuildBinPath;
+exports.resolveExecutableNames = resolveExecutableNames;
+const child_process_1 = __nccwpck_require__(5317);
+const defaultRunSwiftCommand = (args, cwd) => (0, child_process_1.execFileSync)("swift", args, {
+    encoding: "utf8",
+    cwd,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 120_000,
+});
+exports.defaultRunSwiftCommand = defaultRunSwiftCommand;
+// ---------------------------------------------------------------------------
+// Public API
+// ---------------------------------------------------------------------------
+/**
+ * Runs `swift package describe --type json` in `sourceDir` and returns the
+ * parsed package description.
+ */
+function getPackageDescription(sourceDir, run = exports.defaultRunSwiftCommand) {
+    const output = run(["package", "describe", "--type", "json"], sourceDir);
+    return JSON.parse(output);
+}
+/**
+ * Runs `swift build --show-bin-path -c <config>` in `sourceDir` and returns
+ * the trimmed absolute path to the build products directory.
+ */
+function getBuildBinPath(sourceDir, config, run = exports.defaultRunSwiftCommand) {
+    const output = run(["build", "--show-bin-path", "-c", config], sourceDir);
+    return output.trim();
+}
+/**
+ * Given a package description and a list of product names, resolves the
+ * executable target names for those products. Throws if a product is not
+ * found or is not an executable.
+ *
+ * Returns de-duplicated target names (the file names of the built
+ * executables in the build directory).
+ */
+function resolveExecutableNames(description, productNames) {
+    const targetNames = new Set();
+    for (const name of productNames) {
+        const product = description.products.find((p) => p.name === name);
+        if (!product) {
+            throw new Error(`Product '${name}' not found in package '${description.name}'. ` +
+                `Available products: ${description.products.map((p) => p.name).join(", ")}.`);
+        }
+        if (!("executable" in product.type)) {
+            throw new Error(`Product '${name}' is not an executable (type: ${JSON.stringify(product.type)}).`);
+        }
+        for (const t of product.targets) {
+            targetNames.add(t);
+        }
+    }
+    return [...targetNames];
+}
+//# sourceMappingURL=swift-package.js.map
 
 /***/ }),
 

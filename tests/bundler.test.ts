@@ -15,7 +15,7 @@ function tempDir(tag: string): string {
   return dir;
 }
 
-/** ELF magic + 12 zero bytes so the magic-number sniff picks it up. */
+/** Writes a minimal file with ELF magic bytes at `p`. */
 function writeFakeElf(p: string): void {
   const buf = Buffer.alloc(16);
   buf[0] = 0x7f;
@@ -26,7 +26,7 @@ function writeFakeElf(p: string): void {
   fs.chmodSync(p, 0o755);
 }
 
-/** PE magic (MZ) so the sniff treats the file as a Windows executable. */
+/** Writes a minimal file with PE (MZ) magic bytes at `p`. */
 function writeFakePe(p: string): void {
   const buf = Buffer.alloc(64);
   buf[0] = 0x4d;
@@ -40,18 +40,24 @@ describe("bundle()", () => {
       bundle({
         buildDirectory: "/definitely/does/not/exist",
         outputDirectory: tempDir("missing-out"),
+        executableNames: ["hello"],
         platform: "linux",
       }),
     ).toThrow(/build-directory does not exist/);
   });
 
-  test("errors out when build-directory has no executables", () => {
+  test("errors out when named executable is not in build directory", () => {
     const build = tempDir("empty-build");
     const out = tempDir("empty-out");
     fs.writeFileSync(path.join(build, "README.txt"), "hello");
     expect(() =>
-      bundle({ buildDirectory: build, outputDirectory: out, platform: "linux" }),
-    ).toThrow(/No executables found/);
+      bundle({
+        buildDirectory: build,
+        outputDirectory: out,
+        executableNames: ["hello"],
+        platform: "linux",
+      }),
+    ).toThrow(/Executable 'hello' not found in build directory/);
   });
 
   test("copies resource bundles with names preserved (.resources and .bundle)", () => {
@@ -80,6 +86,7 @@ describe("bundle()", () => {
     const result = bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: () => "", // no dynamic deps
       log: () => {},
@@ -115,6 +122,7 @@ describe("bundle()", () => {
     bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: () => "",
       log: () => {},
@@ -122,14 +130,16 @@ describe("bundle()", () => {
     expect(fs.existsSync(out)).toBe(true);
   });
 
-  test("ignores non-executable extensionless files (magic-number sniff)", () => {
+  test("only copies named executables, not other files in build directory", () => {
     const build = tempDir("sniff-build");
     const out = tempDir("sniff-out");
     writeFakeElf(path.join(build, "hello"));
+    writeFakeElf(path.join(build, "other-tool"));
     fs.writeFileSync(path.join(build, "README"), "not an ELF");
     const result = bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: () => "",
       log: () => {},
@@ -138,6 +148,7 @@ describe("bundle()", () => {
       "hello",
     ]);
     expect(fs.existsSync(path.join(out, "README"))).toBe(false);
+    expect(fs.existsSync(path.join(out, "other-tool"))).toBe(false);
   });
 
   test("Linux: bundles allow-listed SOs from ldd output", () => {
@@ -154,6 +165,7 @@ describe("bundle()", () => {
     const result = bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: () =>
         [
@@ -188,6 +200,7 @@ describe("bundle()", () => {
     const result = bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: (modulePath) => {
         lddInputs.push(modulePath);
@@ -235,6 +248,7 @@ describe("bundle()", () => {
     bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: (modulePath) => {
         if (path.basename(modulePath) === "hello") {
@@ -266,6 +280,7 @@ describe("bundle()", () => {
     bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "linux",
       runLdd: (modulePath) => {
         calls++;
@@ -297,6 +312,7 @@ describe("bundle()", () => {
       bundle({
         buildDirectory: build,
         outputDirectory: out,
+        executableNames: ["hello"],
         platform: "linux",
         runLdd: () => {
           throw new Error("ldd: command not found");
@@ -314,6 +330,7 @@ describe("bundle()", () => {
       bundle({
         buildDirectory: build,
         outputDirectory: out,
+        executableNames: ["hello"],
         platform: "linux",
         runLdd: () => "\tlibswiftCore.so => not found\n",
         log: () => {},
@@ -352,6 +369,7 @@ describe("bundle()", () => {
     const result = bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "windows",
       pathDirs: [systemDir],
       runReadobj: (args) => {
@@ -381,6 +399,7 @@ describe("bundle()", () => {
       bundle({
         buildDirectory: build,
         outputDirectory: out,
+        executableNames: ["hello"],
         platform: "windows",
         pathDirs: [],
         runReadobj: () => "Import {\n  Name: swiftCore.dll\n}\n",
@@ -393,7 +412,7 @@ describe("bundle()", () => {
     const build = tempDir("mac-build");
     const out = tempDir("mac-out");
 
-    // Mach-O magic (MH_MAGIC_64).
+    // Write a file with Mach-O magic (MH_MAGIC_64).
     const buf = Buffer.alloc(16);
     buf.writeUInt32LE(0xfeedfacf, 0);
     fs.writeFileSync(path.join(build, "hello"), buf);
@@ -408,6 +427,7 @@ describe("bundle()", () => {
     const result = bundle({
       buildDirectory: build,
       outputDirectory: out,
+      executableNames: ["hello"],
       platform: "darwin",
       runLdd: () => {
         throw new Error("ldd must not be invoked on darwin");
