@@ -1,5 +1,6 @@
 // SPDX short identifier: Apache-2.0
 
+import { type MockInstance } from "vitest";
 import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
@@ -7,7 +8,7 @@ import * as crypto from "crypto";
 import * as core from "@actions/core";
 import { main } from "../src/run";
 
-jest.setTimeout(30 * 1000);
+vi.mock("@actions/core");
 
 function tempDir(tag: string): string {
   const id = crypto.randomBytes(6).toString("hex");
@@ -40,18 +41,14 @@ function fakePackageJson(name: string): string {
 }
 
 describe("run.main()", () => {
-  let setFailed: jest.SpyInstance;
-  let setOutput: jest.SpyInstance;
+  let setFailed: MockInstance;
+  let setOutput: MockInstance;
 
   beforeEach(() => {
-    jest.clearAllMocks();
-    setFailed = jest.spyOn(core, "setFailed").mockImplementation(() => {});
-    setOutput = jest.spyOn(core, "setOutput").mockImplementation(() => {});
-    jest.spyOn(core, "info").mockImplementation(() => {});
-    jest.spyOn(core, "error").mockImplementation(() => {});
-    jest
-      .spyOn(core, "group")
-      .mockImplementation(async (_name: string, fn: any) => fn());
+    vi.clearAllMocks();
+    setFailed = vi.mocked(core.setFailed);
+    setOutput = vi.mocked(core.setOutput);
+    vi.mocked(core.group).mockImplementation(async (_name: string, fn: any) => fn());
   });
 
   test("sets bundlePath and executablePaths outputs on success", async () => {
@@ -107,15 +104,13 @@ describe("run.main()", () => {
     const out = tempDir("in-out");
     writeFakeElf(path.join(build, "hello"));
 
-    const getInput = jest
-      .spyOn(core, "getInput")
-      .mockImplementation((name: string) => {
-        if (name === "products") return "hello";
-        if (name === "output-directory") return out;
-        if (name === "source-directory") return ".";
-        if (name === "config") return "release";
-        return "";
-      });
+    vi.mocked(core.getInput).mockImplementation((name: string) => {
+      if (name === "products") return "hello";
+      if (name === "output-directory") return out;
+      if (name === "source-directory") return ".";
+      if (name === "config") return "release";
+      return "";
+    });
 
     await main({
       buildDirectory: build,
@@ -132,20 +127,16 @@ describe("run.main()", () => {
 
     expect(setFailed).toHaveBeenCalledTimes(0);
     expect(setOutput).toHaveBeenCalledWith("bundlePath", path.resolve(out));
-    getInput.mockRestore();
   });
 
   test("fails fast when no products are provided", async () => {
-    const getInput = jest
-      .spyOn(core, "getInput")
-      .mockImplementation((name: string) => {
-        if (name === "products") return "";
-        if (name === "output-directory") return "/tmp/out";
-        return "";
-      });
+    vi.mocked(core.getInput).mockImplementation((name: string) => {
+      if (name === "products") return "";
+      if (name === "output-directory") return "/tmp/out";
+      return "";
+    });
     await main();
     expect(setFailed).toHaveBeenCalledTimes(1);
     expect(setFailed.mock.calls[0][0]).toMatch(/No product names provided/);
-    getInput.mockRestore();
   });
 });

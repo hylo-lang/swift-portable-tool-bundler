@@ -6,7 +6,6 @@ import * as path from "path";
 import * as crypto from "crypto";
 import { bundle } from "../src/bundler";
 
-jest.setTimeout(30 * 1000);
 
 function tempDir(tag: string): string {
   const id = crypto.randomBytes(6).toString("hex");

@@ -3,10 +3,14 @@
 // Flat config for ESLint v9. Keeps the same rule set as the legacy
 // `.eslintrc.js` used by setup-hylo.
 
-const tsParser = require("@typescript-eslint/parser");
-const tsPlugin = require("@typescript-eslint/eslint-plugin");
+import path from "path";
+import { fileURLToPath } from "url";
+import tsParser from "@typescript-eslint/parser";
+import tsPlugin from "@typescript-eslint/eslint-plugin";
 
-module.exports = [
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export default [
   {
     ignores: [
       "build/**",

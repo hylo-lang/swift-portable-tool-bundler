@@ -20,7 +20,7 @@ jobs:
           node-version: "24.x"
       - run: npm ci
         shell: bash
-      - run: npx jest
+      - run: npx vitest run
         shell: bash
 
   check-dist:
