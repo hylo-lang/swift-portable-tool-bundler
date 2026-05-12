@@ -26,10 +26,10 @@ The intended workflow is:
 
 | Input | Required | Default | Description |
 |---|---|---|---|
-| `products` | yes | — | Newline-separated list of executable product names to bundle. |
+| `products` | yes |  | Newline-separated list of executable product names to bundle. |
 | `source-directory` | no | `.` | Path to the Swift package root (where `Package.swift` lives). |
 | `config` | no | `release` | Build configuration (`debug` or `release`). |
-| `output-directory` | yes | — | Where to place the portable bundle. Created if it does not exist. |
+| `output-directory` | yes |  | Where to place the portable bundle. Created if it does not exist. |
 
 ## Outputs
 
