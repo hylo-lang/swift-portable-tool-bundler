@@ -1,7 +1,8 @@
-// SPDX short identifier: Apache-2.0
 
+/** A supported operating-system family. */
 export type Platform = "linux" | "windows" | "darwin";
 
+/** Returns the `Platform` corresponding to the running Node.js process. */
 export function currentPlatform(): Platform {
   switch (process.platform) {
     case "linux":

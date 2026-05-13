@@ -1,6 +1,5 @@
-// SPDX short identifier: Apache-2.0
 
-import { getSoDependencies, parseLdd } from "../src/linux-deps";
+import { getSoDependencies, parseLdd } from "../src/dependencies-linux";
 
 const SAMPLE_LDD_OUTPUT = `	linux-vdso.so.1 (0x00007ffd7af43000)
 	libFoundation.so.6.2 => /usr/lib/swift/linux/libFoundation.so.6.2 (0x00007f9c12a00000)
@@ -37,11 +36,11 @@ describe("parseLdd", () => {
 describe("getSoDependencies", () => {
   test("invokes the injected ldd runner", () => {
     const calls: string[] = [];
-    const deps = getSoDependencies("/bin/hello", (m) => {
+    const ds = getSoDependencies("/bin/hello", (m) => {
       calls.push(m);
       return SAMPLE_LDD_OUTPUT;
     });
     expect(calls).toEqual(["/bin/hello"]);
-    expect(deps.map((d) => d.soname)).toContain("libswiftCore.so");
+    expect(ds.map((d) => d.soname)).toContain("libswiftCore.so");
   });
 });

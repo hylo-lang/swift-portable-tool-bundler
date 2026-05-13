@@ -1,12 +1,13 @@
-// SPDX short identifier: Apache-2.0
-//
+
 // Linux shared-object dependency discovery via `ldd`.
 // Ported from swift-bundler's `GenericLinuxBundler.swift`.
 
 import { execFileSync } from "child_process";
 
+/** Runs `ldd` on `modulePath` and returns its stdout. */
 export type RunLdd = (modulePath: string) => string;
 
+/** Default runner: invokes the system `ldd`. */
 export const defaultLdd: RunLdd = (modulePath) =>
   execFileSync("ldd", [modulePath], {
     encoding: "utf8",
@@ -42,6 +43,7 @@ export function parseLdd(output: string): LddEntry[] {
   return entries;
 }
 
+/** Runs `ldd` on `modulePath` and returns the parsed `(soname, path)` entries. */
 export function getSoDependencies(
   modulePath: string,
   run: RunLdd = defaultLdd,

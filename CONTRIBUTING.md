@@ -5,7 +5,7 @@ Thanks for your interest in improving `swift-portable-tool-bundler`.
 ## Local development
 
 ```sh
-npm ci          # install dev + runtime deps
+npm ci          # install dev + runtime dependencies
 npm test        # jest, ~30s
 npm run lint    # eslint
 npm run build   # tsc -> build/

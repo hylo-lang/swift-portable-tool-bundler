@@ -1,6 +1,5 @@
-// SPDX short identifier: Apache-2.0
 
-import { splitPath } from "../src/bundler";
+import { splitPath } from "../src/path-utils";
 
 describe("splitPath", () => {
   test("uses ';' on Windows", () => {

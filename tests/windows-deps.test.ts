@@ -1,6 +1,5 @@
-// SPDX short identifier: Apache-2.0
 
-import { getDllDependencies, parseCoffImports } from "../src/windows-deps";
+import { getDllDependencies, parseCoffImports } from "../src/dependencies-windows";
 
 const SAMPLE_COFF_IMPORTS = `File: hello.exe
 Format: COFF-x86-64
@@ -49,11 +48,11 @@ describe("parseCoffImports", () => {
 describe("getDllDependencies", () => {
   test("invokes the injected readobj runner with --coff-imports", () => {
     const calls: string[][] = [];
-    const deps = getDllDependencies("C:\\path\\hello.exe", (args) => {
+    const ds = getDllDependencies("C:\\path\\hello.exe", (args) => {
       calls.push(args);
       return SAMPLE_COFF_IMPORTS;
     });
     expect(calls).toEqual([["--coff-imports", "C:\\path\\hello.exe"]]);
-    expect(deps).toContain("swiftCore.dll");
+    expect(ds).toContain("swiftCore.dll");
   });
 });

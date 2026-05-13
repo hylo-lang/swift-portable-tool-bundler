@@ -1,5 +1,3 @@
-// SPDX short identifier: Apache-2.0
-//
 // Platform-specific allow-lists of dynamic libraries that may be copied into
 // the portable bundle. Anything not on these lists is assumed to be a system
 // library and is ignored. Ported from swift-bundler's GenericWindowsBundler

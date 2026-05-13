@@ -31045,9 +31045,65 @@ function getIDToken(aud) {
  */
 
 //# sourceMappingURL=core.js.map
+;// CONCATENATED MODULE: ./build/src/closure-walk.js
+// Generic dynamic-library closure walker. Platform-specific resolution
+// strategies (Windows DLL, Linux SO) plug in via `DependencyResolver`.
+
+
+/**
+ * Walk the dynamic-library closure of `roots`, copying every dependency
+ * returned by `resolve` into `bundleDir`.
+ *
+ * Returns the absolute paths of all files copied into the bundle
+ * (excluding companions).
+ */
+function walkDependencyClosure(roots, bundleDir, resolve, options) {
+    const visited = new Set();
+    const copied = [];
+    const rootSet = new Set(roots.map((r) => external_path_namespaceObject.resolve(r)));
+    function walk(entry) {
+        let ds;
+        try {
+            ds = resolve(entry);
+        }
+        catch (e) {
+            if (options.swallowTransitiveErrors && !rootSet.has(external_path_namespaceObject.resolve(entry))) {
+                // Guaranteed: resolve implementations only throw Error instances.
+                options.log(`Skipping non-ELF or broken ELF: ${entry} (${e.message})`);
+                return;
+            }
+            if (rootSet.has(external_path_namespaceObject.resolve(entry))) {
+                throw new Error(
+                // Guaranteed: resolve implementations only throw Error instances.
+                `Dependency resolution failed on root entry '${entry}': ${e.message}`);
+            }
+            throw e;
+        }
+        for (const d of ds) {
+            const key = d.deduplicationKey ?? d.bundleName;
+            if (visited.has(key))
+                continue;
+            visited.add(key);
+            if (d.copySource !== undefined) {
+                const dest = external_path_namespaceObject.join(bundleDir, d.bundleName);
+                options.log(`Copying ${d.copySource}`);
+                external_fs_namespaceObject.copyFileSync(d.copySource, dest);
+                copied.push(dest);
+            }
+            if (d.companions) {
+                for (const c of d.companions) {
+                    external_fs_namespaceObject.copyFileSync(c.source, external_path_namespaceObject.join(bundleDir, c.destName));
+                }
+            }
+            walk(d.recursionEntry);
+        }
+    }
+    for (const root of roots)
+        walk(root);
+    return copied;
+}
+//# sourceMappingURL=closure-walk.js.map
 ;// CONCATENATED MODULE: ./build/src/allowlist.js
-// SPDX short identifier: Apache-2.0
-//
 // Platform-specific allow-lists of dynamic libraries that may be copied into
 // the portable bundle. Anything not on these lists is assumed to be a system
 // library and is ignored. Ported from swift-bundler's GenericWindowsBundler
@@ -31142,70 +31198,11 @@ function isAllowedLinuxSo(fileName) {
     return LINUX_SO_ALLOWLIST.includes(stem);
 }
 //# sourceMappingURL=allowlist.js.map
-;// CONCATENATED MODULE: ./build/src/platform.js
-// SPDX short identifier: Apache-2.0
-function currentPlatform() {
-    switch (process.platform) {
-        case "linux":
-            return "linux";
-        case "win32":
-            return "windows";
-        case "darwin":
-            return "darwin";
-        default:
-            throw new Error(`Unsupported platform: ${process.platform}`);
-    }
-}
-//# sourceMappingURL=platform.js.map
-;// CONCATENATED MODULE: ./build/src/windows-deps.js
-// SPDX short identifier: Apache-2.0
-//
-// Windows DLL dependency discovery via `llvm-readobj --coff-imports`.
-// Ported from swift-windows-dll-bundler's `scripts/Bundle-Dlls.ps1`.
-
-/** Default runner: invokes `llvm-readobj` from PATH. */
-const defaultReadobj = (args) => (0,external_child_process_namespaceObject.execFileSync)("llvm-readobj", args, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-    // Hard cap so a wedged or hung llvm-readobj cannot stall a CI run.
-    timeout: 30_000,
-});
-/**
- * Parse the Import-table output of `llvm-readobj --coff-imports` and return
- * the list of imported DLL base names (preserving case as emitted).
- *
- * Throws if the output does not contain any `Import {` section, which is a
- * reliable indicator that either the input is not a PE file or the tool
- * failed silently.
- */
-function parseCoffImports(output, modulePath) {
-    const chunks = output.split(/Import\s*\{/);
-    if (chunks.length < 2) {
-        throw new Error(`llvm-readobj produced no Import sections for '${modulePath}'. Output was:\n${output}`);
-    }
-    const deps = [];
-    const nameRe = /^\s*Name:\s*(\S+)\s*$/m;
-    for (let i = 1; i < chunks.length; i++) {
-        const m = nameRe.exec(chunks[i]);
-        if (!m) {
-            throw new Error(`Could not find 'Name:' field in Import block #${i} of '${modulePath}'. Block was:\n${chunks[i]}`);
-        }
-        deps.push(m[1]);
-    }
-    return deps;
-}
-/** Directly runs `llvm-readobj --coff-imports` and parses the output. */
-function getDllDependencies(modulePath, run = defaultReadobj) {
-    const output = run(["--coff-imports", modulePath]);
-    return parseCoffImports(output, modulePath);
-}
-//# sourceMappingURL=windows-deps.js.map
-;// CONCATENATED MODULE: ./build/src/linux-deps.js
-// SPDX short identifier: Apache-2.0
-//
+;// CONCATENATED MODULE: ./build/src/dependencies-linux.js
 // Linux shared-object dependency discovery via `ldd`.
 // Ported from swift-bundler's `GenericLinuxBundler.swift`.
 
+/** Default runner: invokes the system `ldd`. */
 const defaultLdd = (modulePath) => (0,external_child_process_namespaceObject.execFileSync)("ldd", [modulePath], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
@@ -31232,29 +31229,205 @@ function parseLdd(output) {
     }
     return entries;
 }
+/** Runs `ldd` on `modulePath` and returns the parsed `(soname, path)` entries. */
 function getSoDependencies(modulePath, run = defaultLdd) {
     return parseLdd(run(modulePath));
 }
-//# sourceMappingURL=linux-deps.js.map
+//# sourceMappingURL=dependencies-linux.js.map
+;// CONCATENATED MODULE: ./build/src/linux-closure.js
+// Linux SO closure strategy for `walkDependencyClosure`.
+//
+// Closure-walk recursion target: ELF DT_RUNPATH entries (commonly
+// `$ORIGIN`) resolve relative to the file's location at the time
+// `ld.so` reads it. The bundle is still being assembled so siblings
+// are not yet present there; we must recurse on the **toolchain source
+// path** so rpath stays valid.
+
+
+
+
+/**
+ * Returns a `DependencyResolver` that discovers Linux shared-object
+ * dependencies via `ldd` and resolves them against the build directory
+ * and the paths reported by the dynamic linker.
+ */
+function linuxDependencyResolver(bundleDir, buildDirectory, runLdd) {
+    return (entry) => {
+        const ds = [];
+        for (const { soname: SOName, path: resolvedPath } of getSoDependencies(entry, runLdd)) {
+            if (!isAllowedLinuxSo(SOName))
+                continue;
+            if (resolvedPath === "" || resolvedPath === "not found") {
+                throw new Error(`ldd could not resolve allow-listed library '${SOName}' for ${entry}.`);
+            }
+            // Build products next to the executable take precedence.
+            const localBuild = external_path_namespaceObject.join(buildDirectory, SOName);
+            const sourceForWalk = external_fs_namespaceObject.existsSync(localBuild) ? localBuild : resolvedPath;
+            // Dereference symlinks: the bundle must contain the real file,
+            // not a dangling absolute symlink back into the toolchain.
+            const copySource = external_fs_namespaceObject.realpathSync(sourceForWalk);
+            const destination = external_path_namespaceObject.join(bundleDir, SOName);
+            const alreadyCopied = external_path_namespaceObject.resolve(copySource) === external_path_namespaceObject.resolve(destination);
+            ds.push({
+                bundleName: SOName,
+                copySource: alreadyCopied ? undefined : copySource,
+                // Recurse on the *source* in the toolchain, not the bundled copy,
+                // so `$ORIGIN`-rooted rpath entries keep resolving correctly.
+                recursionEntry: sourceForWalk,
+            });
+        }
+        return ds;
+    };
+}
+//# sourceMappingURL=linux-closure.js.map
+;// CONCATENATED MODULE: ./build/src/path-utils.js
+/** Splits an OS-style PATH list using the separator appropriate for `platform`. */
+function splitPath(p, platform) {
+    const sep = platform === "windows" ? ";" : ":";
+    return p.split(sep).filter((s) => s.length > 0);
+}
+//# sourceMappingURL=path-utils.js.map
+;// CONCATENATED MODULE: ./build/src/platform.js
+/** Returns the `Platform` corresponding to the running Node.js process. */
+function currentPlatform() {
+    switch (process.platform) {
+        case "linux":
+            return "linux";
+        case "win32":
+            return "windows";
+        case "darwin":
+            return "darwin";
+        default:
+            throw new Error(`Unsupported platform: ${process.platform}`);
+    }
+}
+//# sourceMappingURL=platform.js.map
+;// CONCATENATED MODULE: ./build/src/dependencies-windows.js
+// Windows DLL dependency discovery via `llvm-readobj --coff-imports`.
+// Ported from swift-windows-dll-bundler's `scripts/Bundle-Dlls.ps1`.
+
+/** Default runner: invokes `llvm-readobj` from PATH. */
+const defaultReadobj = (args) => (0,external_child_process_namespaceObject.execFileSync)("llvm-readobj", args, {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    // Hard cap so a wedged or hung llvm-readobj cannot stall a CI run.
+    timeout: 30_000,
+});
+/**
+ * Parse the Import-table output of `llvm-readobj --coff-imports` and return
+ * the list of imported DLL base names (preserving case as emitted).
+ *
+ * Throws if the output does not contain any `Import {` section, which is a
+ * reliable indicator that either the input is not a PE file or the tool
+ * failed silently.
+ */
+function parseCoffImports(importTable, modulePath) {
+    const chunks = importTable.split(/Import\s*\{/);
+    if (chunks.length < 2) {
+        throw new Error(`llvm-readobj produced no Import sections for '${modulePath}'. Output was:\n${importTable}`);
+    }
+    const dependencies = [];
+    const namePattern = /^\s*Name:\s*(\S+)\s*$/m;
+    for (let i = 1; i < chunks.length; i++) {
+        const m = namePattern.exec(chunks[i]);
+        if (!m) {
+            throw new Error(`Could not find 'Name:' field in Import block #${i} of '${modulePath}'. Block was:\n${chunks[i]}`);
+        }
+        dependencies.push(m[1]);
+    }
+    return dependencies;
+}
+/** Directly runs `llvm-readobj --coff-imports` and parses the output. */
+function getDllDependencies(modulePath, run = defaultReadobj) {
+    const output = run(["--coff-imports", modulePath]);
+    return parseCoffImports(output, modulePath);
+}
+//# sourceMappingURL=dependencies-windows.js.map
+;// CONCATENATED MODULE: ./build/src/windows-closure.js
+// Windows DLL closure strategy for `walkDependencyClosure`.
+//
+// Closure-walk recursion target: Windows imports are resolved by *name*
+// (no rpath concept), so after copying a DLL into the bundle we recurse
+// on the **bundled copy**. This keeps the walk anchored to the final
+// layout and lets test stubs reason exclusively about bundle-local paths.
+
+
+
+
+/**
+ * Returns a `DependencyResolver` that discovers Windows DLL imports via
+ * `llvm-readobj` and resolves them against the bundle, build directory,
+ * and PATH in that order.
+ */
+function windowsDependencyResolver(bundleDir, buildDirectory, pathDirs, runReadobj) {
+    return (entry) => {
+        const ds = [];
+        for (const name of getDllDependencies(entry, runReadobj)) {
+            const dest = external_path_namespaceObject.join(bundleDir, name);
+            const lowered = name.toLowerCase();
+            // Already in the bundle (copied by a previous iteration).
+            if (external_fs_namespaceObject.existsSync(dest)) {
+                ds.push({
+                    bundleName: name,
+                    deduplicationKey: lowered,
+                    copySource: undefined,
+                    recursionEntry: dest,
+                });
+                continue;
+            }
+            // Build product sitting next to the executable.
+            const inBuild = external_path_namespaceObject.join(buildDirectory, name);
+            if (external_fs_namespaceObject.existsSync(inBuild)) {
+                ds.push({
+                    bundleName: name,
+                    deduplicationKey: lowered,
+                    copySource: inBuild,
+                    recursionEntry: dest,
+                    companions: pdbCompanion(inBuild, name),
+                });
+                continue;
+            }
+            // Allow-listed library found on PATH.
+            if (!isAllowedWindowsDll(name))
+                continue;
+            const onPath = findOnPath(name, pathDirs);
+            if (onPath === undefined) {
+                throw new Error(`Could not locate allow-listed DLL '${name}' on PATH.`);
+            }
+            ds.push({
+                bundleName: name,
+                deduplicationKey: lowered,
+                copySource: onPath,
+                recursionEntry: dest,
+                companions: pdbCompanion(onPath, name),
+            });
+        }
+        return ds;
+    };
+}
+/**
+ * Returns a companion entry for the `.pdb` debug-symbol file next to
+ * `dllSource`, if any.
+ */
+function pdbCompanion(dllSource, dllName) {
+    const pdb = dllSource.replace(/\.dll$/i, ".pdb");
+    if (!external_fs_namespaceObject.existsSync(pdb))
+        return undefined;
+    return [{ source: pdb, destName: dllName.replace(/\.dll$/i, ".pdb") }];
+}
+/** Returns the first file named `name` found in `dirs`, if any. */
+function findOnPath(name, dirs) {
+    for (const dir of dirs) {
+        const candidate = external_path_namespaceObject.join(dir, name);
+        if (external_fs_namespaceObject.existsSync(candidate))
+            return candidate;
+    }
+    return undefined;
+}
+//# sourceMappingURL=windows-closure.js.map
 ;// CONCATENATED MODULE: ./build/src/bundler.js
-// SPDX short identifier: Apache-2.0
-//
 // Orchestrates assembling a portable bundle from a Swift build directory.
-//
-// Closure-walk recursion-target rule (subtle but important):
-//
-// * Windows / PE — imports are resolved by *name* (no rpath concept), so
-//   after copying a DLL into the bundle we recurse on the **bundled copy**.
-//   This keeps the walk anchored to the final layout and lets test stubs
-//   reason exclusively about bundle-local paths.
-//
-// * Linux / ELF — DT_RUNPATH entries (commonly `$ORIGIN`) resolve relative
-//   to the file's location at the time `ld.so` reads it. The bundle is
-//   still being assembled so siblings are not yet present there; we must
-//   recurse on the **toolchain source path** so rpath stays valid.
-//
-// Any future change that touches the recursion target needs to preserve
-// this asymmetry. There are dedicated regression tests for both branches.
+
 
 
 
@@ -31294,37 +31467,7 @@ function bundle(opts) {
     external_fs_namespaceObject.mkdirSync(outputDirectory, { recursive: true });
     const executablePaths = copyExecutables(buildDirectory, outputDirectory, executableNames, platform, log);
     const resourceBundlePaths = copyResourceBundles(buildDirectory, outputDirectory, log);
-    const libraryPaths = [];
-    if (platform === "windows") {
-        const pathDirs = opts.pathDirs ?? splitPath(process.env.PATH ?? "", platform);
-        for (const exe of executablePaths) {
-            copyWindowsDllClosure({
-                entry: exe,
-                bundleDir: outputDirectory,
-                buildDirectory,
-                pathDirs,
-                runReadobj: opts.runReadobj,
-                visited: new Set(),
-                out: libraryPaths,
-                log,
-            });
-        }
-    }
-    else if (platform === "linux") {
-        for (const exe of executablePaths) {
-            copyLinuxSoClosure({
-                entry: exe,
-                isRoot: true,
-                bundleDir: outputDirectory,
-                buildDirectory,
-                runLdd: opts.runLdd,
-                visited: new Set(),
-                out: libraryPaths,
-                log,
-            });
-        }
-    }
-    // macOS: nothing to do; Swift stdlib is part of the OS.
+    const libraryPaths = copyLibraryClosure(executablePaths, outputDirectory, buildDirectory, platform, opts, log);
     return {
         bundlePath: outputDirectory,
         executablePaths,
@@ -31332,11 +31475,19 @@ function bundle(opts) {
         libraryPaths,
     };
 }
-/** Splits an OS-style PATH list using the separator appropriate for `platform`. */
-function splitPath(p, platform) {
-    const sep = platform === "windows" ? ";" : ":";
-    return p.split(sep).filter((s) => s.length > 0);
+// MARK: - Library closure
+function copyLibraryClosure(executablePaths, outputDirectory, buildDirectory, platform, opts, log) {
+    if (platform === "windows") {
+        const pathDirs = opts.pathDirs ?? splitPath(process.env.PATH ?? "", platform);
+        return walkDependencyClosure(executablePaths, outputDirectory, windowsDependencyResolver(outputDirectory, buildDirectory, pathDirs, opts.runReadobj), { swallowTransitiveErrors: false, log });
+    }
+    if (platform === "linux") {
+        return walkDependencyClosure(executablePaths, outputDirectory, linuxDependencyResolver(outputDirectory, buildDirectory, opts.runLdd), { swallowTransitiveErrors: true, log });
+    }
+    // macOS: nothing to do; Swift stdlib is part of the OS.
+    return [];
 }
+// MARK: - Executables
 function copyExecutables(buildDirectory, outputDirectory, executableNames, platform, log) {
     const copied = [];
     for (const name of executableNames) {
@@ -31361,6 +31512,7 @@ function copyExecutables(buildDirectory, outputDirectory, executableNames, platf
     }
     return copied;
 }
+// MARK: - Resource bundles
 function copyResourceBundles(buildDirectory, outputDirectory, log) {
     const copied = [];
     for (const entry of external_fs_namespaceObject.readdirSync(buildDirectory, { withFileTypes: true })) {
@@ -31398,106 +31550,11 @@ function copyDirRecursive(src, dst) {
         }
     }
 }
-function copyWindowsDllClosure(ctx) {
-    for (const dep of getDllDependencies(ctx.entry, ctx.runReadobj)) {
-        const key = dep.toLowerCase();
-        if (ctx.visited.has(key))
-            continue;
-        ctx.visited.add(key);
-        const source = resolveWindowsDll(dep, ctx);
-        if (source === null)
-            continue;
-        const dest = external_path_namespaceObject.join(ctx.bundleDir, dep);
-        if (source.toLowerCase() !== dest.toLowerCase()) {
-            ctx.log(`Copying ${source}`);
-            external_fs_namespaceObject.copyFileSync(source, dest);
-            const pdb = source.replace(/\.dll$/i, ".pdb");
-            if (external_fs_namespaceObject.existsSync(pdb)) {
-                external_fs_namespaceObject.copyFileSync(pdb, external_path_namespaceObject.join(ctx.bundleDir, external_path_namespaceObject.basename(dep).replace(/\.dll$/i, ".pdb")));
-            }
-            ctx.out.push(dest);
-        }
-        // Always continue the walk against the bundled copy so transitive
-        // imports are discovered relative to the final layout (and so test
-        // stubs only need to reason about bundle-local paths).
-        copyWindowsDllClosure({ ...ctx, entry: dest });
-    }
-}
-function resolveWindowsDll(name, ctx) {
-    // Build products sitting next to the executable are always kept.
-    const localBundle = external_path_namespaceObject.join(ctx.bundleDir, name);
-    if (external_fs_namespaceObject.existsSync(localBundle))
-        return localBundle;
-    const localBuild = external_path_namespaceObject.join(ctx.buildDirectory, name);
-    if (external_fs_namespaceObject.existsSync(localBuild)) {
-        // Stage it into the bundle so the closure walk is consistent.
-        const dst = external_path_namespaceObject.join(ctx.bundleDir, name);
-        external_fs_namespaceObject.copyFileSync(localBuild, dst);
-        ctx.out.push(dst);
-        return dst;
-    }
-    if (!isAllowedWindowsDll(name))
-        return null;
-    for (const dir of ctx.pathDirs) {
-        const candidate = external_path_namespaceObject.join(dir, name);
-        if (external_fs_namespaceObject.existsSync(candidate))
-            return candidate;
-    }
-    throw new Error(`Could not locate allow-listed DLL '${name}' on PATH.`);
-}
-function copyLinuxSoClosure(ctx) {
-    let entries;
-    try {
-        entries = getSoDependencies(ctx.entry, ctx.runLdd);
-    }
-    catch (err) {
-        // For root executables an `ldd` failure is fatal: a corrupt input,
-        // a missing read permission, or `ldd` not being on PATH would
-        // otherwise silently produce a bundle without any libraries and
-        // mislead the user. For transitively-discovered libraries, log and
-        // skip; e.g. `ldd` refuses to run on non-ELF blobs (shell wrappers,
-        // linker scripts) which cannot have a dynamic closure of their own.
-        if (ctx.isRoot) {
-            throw new Error(`ldd failed on root executable '${ctx.entry}': ${err.message}`);
-        }
-        ctx.log(`Skipping non-ELF or broken ELF: ${ctx.entry} (${err.message})`);
-        return;
-    }
-    for (const { soname, path: resolvedPath } of entries) {
-        const key = soname;
-        if (ctx.visited.has(key))
-            continue;
-        ctx.visited.add(key);
-        if (!isAllowedLinuxSo(soname))
-            continue;
-        if (resolvedPath === "" || resolvedPath === "not found") {
-            throw new Error(`ldd could not resolve allow-listed library '${soname}' for ${ctx.entry}.`);
-        }
-        // Build products next to the executable are kept in place.
-        const localBuild = external_path_namespaceObject.join(ctx.buildDirectory, soname);
-        const sourceForCopy = external_fs_namespaceObject.existsSync(localBuild) ? localBuild : resolvedPath;
-        const dest = external_path_namespaceObject.join(ctx.bundleDir, soname);
-        if (external_path_namespaceObject.resolve(sourceForCopy) !== external_path_namespaceObject.resolve(dest)) {
-            ctx.log(`Copying ${sourceForCopy}`);
-            const resolved = external_fs_namespaceObject.realpathSync(sourceForCopy);
-            external_fs_namespaceObject.copyFileSync(resolved, dest);
-            ctx.out.push(dest);
-        }
-        // Continue the walk against the *source* file in the toolchain, not
-        // the freshly-copied one in the bundle: ELF DT_RUNPATH entries like
-        // `$ORIGIN` resolve relative to the file's location, and the bundle
-        // is still being assembled so sibling deps are not yet present
-        // there. Walking the toolchain copy keeps rpath resolution stable.
-        // See the file-level comment for the matching Windows rationale.
-        copyLinuxSoClosure({ ...ctx, entry: sourceForCopy, isRoot: false });
-    }
-}
 //# sourceMappingURL=bundler.js.map
 ;// CONCATENATED MODULE: ./build/src/swift-package.js
-// SPDX short identifier: Apache-2.0
-//
 // Helpers for invoking SwiftPM commands and parsing package descriptions.
 
+/** Default runner: invokes the system `swift` binary. */
 const defaultRunSwiftCommand = (args, cwd) => (0,external_child_process_namespaceObject.execFileSync)("swift", args, {
     encoding: "utf8",
     cwd,
@@ -31513,6 +31570,7 @@ const defaultRunSwiftCommand = (args, cwd) => (0,external_child_process_namespac
  */
 function getPackageDescription(sourceDir, run = defaultRunSwiftCommand) {
     const output = run(["package", "describe", "--type", "json"], sourceDir);
+    // `swift package describe --type json` emits this exact shape.
     return JSON.parse(output);
 }
 /**
@@ -31550,7 +31608,6 @@ function resolveExecutableNames(description, productNames) {
 }
 //# sourceMappingURL=swift-package.js.map
 ;// CONCATENATED MODULE: ./build/src/run.js
-// SPDX short identifier: Apache-2.0
 
 
 
@@ -31610,10 +31667,11 @@ async function main(overrides) {
         return result;
     }
     catch (err) {
+        // Guaranteed: all throw sites in this try block throw Error instances.
         const error = err;
         if (error?.stack)
             core_error(error.stack);
-        setFailed(`swift-portable-tool-bundler failed: '${(err ?? "undefined error").toString()}'`);
+        setFailed(`swift-portable-tool-bundler failed: '${(error ?? "undefined error").toString()}'`);
         return undefined;
     }
 }
@@ -31626,8 +31684,6 @@ function parseNewlineSeparated(input) {
 }
 //# sourceMappingURL=run.js.map
 ;// CONCATENATED MODULE: ./build/src/action.js
-// SPDX short identifier: Apache-2.0
-//
 // Bootstrap for the compiled GitHub Action. Thin on purpose: all logic
 // lives in `./run.ts` so unit tests can drive `main()` without triggering
 // side-effects at module-import time.
