@@ -1,5 +1,3 @@
-// SPDX short identifier: Apache-2.0
-//
 // Helpers for invoking SwiftPM commands and parsing package descriptions.
 
 import { execFileSync } from "child_process";
@@ -8,22 +6,26 @@ import { execFileSync } from "child_process";
 // Types — subset of `swift package describe --type json`
 // ---------------------------------------------------------------------------
 
+/** Discriminated type tag from Swift package description. */
 export interface SwiftProductType {
   executable?: null;
   library?: string[];
 }
 
+/** A product entry in a Swift package description. */
 export interface SwiftProduct {
   name: string;
   targets: string[];
   type: SwiftProductType;
 }
 
+/** A target entry in a Swift package description. */
 export interface SwiftTarget {
   name: string;
   type: string;
 }
 
+/** Subset of the Swift package description. */
 export interface SwiftPackageDescription {
   name: string;
   products: SwiftProduct[];
@@ -34,8 +36,10 @@ export interface SwiftPackageDescription {
 // Command runners (injectable for testing)
 // ---------------------------------------------------------------------------
 
+/** Runs `swift` with `args` in `cwd` and returns its stdout. */
 export type RunSwiftCommand = (args: string[], cwd: string) => string;
 
+/** Default runner: invokes the system `swift` binary. */
 export const defaultRunSwiftCommand: RunSwiftCommand = (args, cwd) =>
   execFileSync("swift", args, {
     encoding: "utf8",
@@ -57,6 +61,7 @@ export function getPackageDescription(
   run: RunSwiftCommand = defaultRunSwiftCommand,
 ): SwiftPackageDescription {
   const output = run(["package", "describe", "--type", "json"], sourceDir);
+  // `swift package describe --type json` emits this exact shape.
   return JSON.parse(output) as SwiftPackageDescription;
 }
 
@@ -92,7 +97,7 @@ export function resolveExecutableNames(
     if (!product) {
       throw new Error(
         `Product '${name}' not found in package '${description.name}'. ` +
-          `Available products: ${description.products.map((p) => p.name).join(", ")}.`,
+        `Available products: ${description.products.map((p) => p.name).join(", ")}.`,
       );
     }
     if (!("executable" in product.type)) {

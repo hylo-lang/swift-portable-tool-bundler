@@ -1,5 +1,3 @@
-// SPDX short identifier: Apache-2.0
-//
 // Flat config for ESLint v9. Keeps the same rule set as the legacy
 // `.eslintrc.js` used by setup-hylo.
 
@@ -37,7 +35,7 @@ export default [
     rules: {
       ...tsPlugin.configs.recommended.rules,
       "@typescript-eslint/no-floating-promises": ["error"],
-      "@typescript-eslint/no-explicit-any": ["off"],
+      "@typescript-eslint/no-explicit-any": ["error"],
       "@typescript-eslint/no-unused-vars": ["off"],
       "@typescript-eslint/no-require-imports": ["off"],
     },

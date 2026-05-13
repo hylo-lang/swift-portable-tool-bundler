@@ -1,29 +1,16 @@
-// SPDX short identifier: Apache-2.0
-//
+
 // Orchestrates assembling a portable bundle from a Swift build directory.
-//
-// Closure-walk recursion-target rule (subtle but important):
-//
-// * Windows / PE — imports are resolved by *name* (no rpath concept), so
-//   after copying a DLL into the bundle we recurse on the **bundled copy**.
-//   This keeps the walk anchored to the final layout and lets test stubs
-//   reason exclusively about bundle-local paths.
-//
-// * Linux / ELF — DT_RUNPATH entries (commonly `$ORIGIN`) resolve relative
-//   to the file's location at the time `ld.so` reads it. The bundle is
-//   still being assembled so siblings are not yet present there; we must
-//   recurse on the **toolchain source path** so rpath stays valid.
-//
-// Any future change that touches the recursion target needs to preserve
-// this asymmetry. There are dedicated regression tests for both branches.
 
 import * as fs from "fs";
 import * as path from "path";
 
-import { isAllowedLinuxSo, isAllowedWindowsDll } from "./allowlist";
-import { currentPlatform, Platform } from "./platform";
-import { getDllDependencies, RunReadobj } from "./windows-deps";
-import { getSoDependencies, LddEntry, RunLdd } from "./linux-deps";
+import { walkDependencyClosure } from "./closure-walk";
+import { linuxDependencyResolver } from "./linux-closure";
+import { type RunLdd } from "./dependencies-linux";
+import { splitPath } from "./path-utils";
+import { currentPlatform, type Platform } from "./platform";
+import { windowsDependencyResolver } from "./windows-closure";
+import { type RunReadobj } from "./dependencies-windows";
 
 export interface BundleOptions {
   /** Source Swift build products directory. */
@@ -101,36 +88,7 @@ export function bundle(opts: BundleOptions): BundleResult {
 
   const resourceBundlePaths = copyResourceBundles(buildDirectory, outputDirectory, log);
 
-  const libraryPaths: string[] = [];
-  if (platform === "windows") {
-    const pathDirs = opts.pathDirs ?? splitPath(process.env.PATH ?? "", platform);
-    for (const exe of executablePaths) {
-      copyWindowsDllClosure({
-        entry: exe,
-        bundleDir: outputDirectory,
-        buildDirectory,
-        pathDirs,
-        runReadobj: opts.runReadobj,
-        visited: new Set<string>(),
-        out: libraryPaths,
-        log,
-      });
-    }
-  } else if (platform === "linux") {
-    for (const exe of executablePaths) {
-      copyLinuxSoClosure({
-        entry: exe,
-        isRoot: true,
-        bundleDir: outputDirectory,
-        buildDirectory,
-        runLdd: opts.runLdd,
-        visited: new Set<string>(),
-        out: libraryPaths,
-        log,
-      });
-    }
-  }
-  // macOS: nothing to do; Swift stdlib is part of the OS.
+  const libraryPaths = copyLibraryClosure(executablePaths, outputDirectory, buildDirectory, platform, opts, log);
 
   return {
     bundlePath: outputDirectory,
@@ -140,11 +98,40 @@ export function bundle(opts: BundleOptions): BundleResult {
   };
 }
 
-/** Splits an OS-style PATH list using the separator appropriate for `platform`. */
-export function splitPath(p: string, platform: Platform): string[] {
-  const sep = platform === "windows" ? ";" : ":";
-  return p.split(sep).filter((s) => s.length > 0);
+// MARK: - Library closure
+
+function copyLibraryClosure(
+  executablePaths: readonly string[],
+  outputDirectory: string,
+  buildDirectory: string,
+  platform: Platform,
+  opts: BundleOptions,
+  log: (msg: string) => void,
+): string[] {
+  if (platform === "windows") {
+    const pathDirs = opts.pathDirs ?? splitPath(process.env.PATH ?? "", platform);
+    return walkDependencyClosure(
+      executablePaths,
+      outputDirectory,
+      windowsDependencyResolver(outputDirectory, buildDirectory, pathDirs, opts.runReadobj),
+      { swallowTransitiveErrors: false, log },
+    );
+  }
+
+  if (platform === "linux") {
+    return walkDependencyClosure(
+      executablePaths,
+      outputDirectory,
+      linuxDependencyResolver(outputDirectory, buildDirectory, opts.runLdd),
+      { swallowTransitiveErrors: true, log },
+    );
+  }
+
+  // macOS: nothing to do; Swift stdlib is part of the OS.
+  return [];
 }
+
+// MARK: - Executables
 
 function copyExecutables(
   buildDirectory: string,
@@ -178,6 +165,8 @@ function copyExecutables(
   }
   return copied;
 }
+
+// MARK: - Resource bundles
 
 function copyResourceBundles(
   buildDirectory: string,
@@ -216,144 +205,5 @@ function copyDirRecursive(src: string, dst: string): void {
     } else {
       fs.copyFileSync(s, d);
     }
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Windows DLL closure
-// ---------------------------------------------------------------------------
-
-interface WindowsClosureCtx {
-  entry: string;
-  bundleDir: string;
-  buildDirectory: string;
-  pathDirs: string[];
-  runReadobj?: RunReadobj;
-  visited: Set<string>;
-  out: string[];
-  log: (msg: string) => void;
-}
-
-function copyWindowsDllClosure(ctx: WindowsClosureCtx): void {
-  for (const dep of getDllDependencies(ctx.entry, ctx.runReadobj)) {
-    const key = dep.toLowerCase();
-    if (ctx.visited.has(key)) continue;
-    ctx.visited.add(key);
-
-    const source = resolveWindowsDll(dep, ctx);
-    if (source === null) continue;
-
-    const dest = path.join(ctx.bundleDir, dep);
-    if (source.toLowerCase() !== dest.toLowerCase()) {
-      ctx.log(`Copying ${source}`);
-      fs.copyFileSync(source, dest);
-      const pdb = source.replace(/\.dll$/i, ".pdb");
-      if (fs.existsSync(pdb)) {
-        fs.copyFileSync(
-          pdb,
-          path.join(ctx.bundleDir, path.basename(dep).replace(/\.dll$/i, ".pdb")),
-        );
-      }
-      ctx.out.push(dest);
-    }
-
-    // Always continue the walk against the bundled copy so transitive
-    // imports are discovered relative to the final layout (and so test
-    // stubs only need to reason about bundle-local paths).
-    copyWindowsDllClosure({ ...ctx, entry: dest });
-  }
-}
-
-function resolveWindowsDll(name: string, ctx: WindowsClosureCtx): string | null {
-  // Build products sitting next to the executable are always kept.
-  const localBundle = path.join(ctx.bundleDir, name);
-  if (fs.existsSync(localBundle)) return localBundle;
-  const localBuild = path.join(ctx.buildDirectory, name);
-  if (fs.existsSync(localBuild)) {
-    // Stage it into the bundle so the closure walk is consistent.
-    const dst = path.join(ctx.bundleDir, name);
-    fs.copyFileSync(localBuild, dst);
-    ctx.out.push(dst);
-    return dst;
-  }
-
-  if (!isAllowedWindowsDll(name)) return null;
-
-  for (const dir of ctx.pathDirs) {
-    const candidate = path.join(dir, name);
-    if (fs.existsSync(candidate)) return candidate;
-  }
-
-  throw new Error(`Could not locate allow-listed DLL '${name}' on PATH.`);
-}
-
-// ---------------------------------------------------------------------------
-// Linux SO closure
-// ---------------------------------------------------------------------------
-
-interface LinuxClosureCtx {
-  entry: string;
-  /** True when `entry` is a root executable from the build directory; false for libraries discovered transitively. */
-  isRoot: boolean;
-  bundleDir: string;
-  buildDirectory: string;
-  runLdd?: RunLdd;
-  visited: Set<string>;
-  out: string[];
-  log: (msg: string) => void;
-}
-
-function copyLinuxSoClosure(ctx: LinuxClosureCtx): void {
-  let entries: LddEntry[];
-  try {
-    entries = getSoDependencies(ctx.entry, ctx.runLdd);
-  } catch (err) {
-    // For root executables an `ldd` failure is fatal: a corrupt input,
-    // a missing read permission, or `ldd` not being on PATH would
-    // otherwise silently produce a bundle without any libraries and
-    // mislead the user. For transitively-discovered libraries, log and
-    // skip; e.g. `ldd` refuses to run on non-ELF blobs (shell wrappers,
-    // linker scripts) which cannot have a dynamic closure of their own.
-    if (ctx.isRoot) {
-      throw new Error(
-        `ldd failed on root executable '${ctx.entry}': ${(err as Error).message}`,
-      );
-    }
-    ctx.log(`Skipping non-ELF or broken ELF: ${ctx.entry} (${(err as Error).message})`);
-    return;
-  }
-
-  for (const { soname, path: resolvedPath } of entries) {
-    const key = soname;
-    if (ctx.visited.has(key)) continue;
-    ctx.visited.add(key);
-
-    if (!isAllowedLinuxSo(soname)) continue;
-
-    if (resolvedPath === "" || resolvedPath === "not found") {
-      throw new Error(
-        `ldd could not resolve allow-listed library '${soname}' for ${ctx.entry}.`,
-      );
-    }
-
-    // Build products next to the executable are kept in place.
-    const localBuild = path.join(ctx.buildDirectory, soname);
-    const sourceForCopy = fs.existsSync(localBuild) ? localBuild : resolvedPath;
-
-    const dest = path.join(ctx.bundleDir, soname);
-    if (path.resolve(sourceForCopy) !== path.resolve(dest)) {
-      ctx.log(`Copying ${sourceForCopy}`);
-      const resolved = fs.realpathSync(sourceForCopy);
-      fs.copyFileSync(resolved, dest);
-      ctx.out.push(dest);
-    }
-
-    // Continue the walk against the *source* file in the toolchain, not
-    // the freshly-copied one in the bundle: ELF DT_RUNPATH entries like
-    // `$ORIGIN` resolve relative to the file's location, and the bundle
-    // is still being assembled so sibling deps are not yet present
-    // there. Walking the toolchain copy keeps rpath resolution stable.
-    // See the file-level comment for the matching Windows rationale.
-    copyLinuxSoClosure({ ...ctx, entry: sourceForCopy, isRoot: false });
   }
 }

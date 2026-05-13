@@ -1,4 +1,3 @@
-// SPDX short identifier: Apache-2.0
 
 import * as core from "@actions/core";
 import { bundle, BundleOptions, BundleResult } from "./bundler";
@@ -10,6 +9,7 @@ import {
   RunSwiftCommand,
 } from "./swift-package";
 
+/** Overrides for `main()`, typically supplied by tests. */
 export interface MainOverrides extends Partial<BundleOptions> {
   /** List of executable product names to bundle. */
   products?: string[];
@@ -98,10 +98,11 @@ export async function main(
     );
     return result;
   } catch (err) {
+    // Guaranteed: all throw sites in this try block throw Error instances.
     const error = err as Error;
     if (error?.stack) core.error(error.stack);
     core.setFailed(
-      `swift-portable-tool-bundler failed: '${(err ?? "undefined error").toString()}'`,
+      `swift-portable-tool-bundler failed: '${(error ?? "undefined error").toString()}'`,
     );
     return undefined;
   }

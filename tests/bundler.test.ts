@@ -1,4 +1,3 @@
-// SPDX short identifier: Apache-2.0
 
 import * as fs from "fs";
 import * as os from "os";
@@ -87,7 +86,7 @@ describe("bundle()", () => {
       outputDirectory: out,
       executableNames: ["hello"],
       platform: "linux",
-      runLdd: () => "", // no dynamic deps
+      runLdd: () => "", // no dynamic dependencies
       log: () => {},
     });
 
@@ -185,7 +184,7 @@ describe("bundle()", () => {
 
   test("Linux: closure walk uses the toolchain source path so $ORIGIN rpath stays valid", () => {
     // Regression test for the bug where we recursed on the bundled copy
-    // of a library, after which `ldd` could not find sibling deps that
+    // of a library, after which `ldd` could not find sibling dependencies that
     // had not yet been copied into the bundle.
     const build = tempDir("rpath-build");
     const out = tempDir("rpath-out");
@@ -225,7 +224,7 @@ describe("bundle()", () => {
       "libswiftCore.so",
     ]);
     // The walk must have reached the toolchain copy of libswiftCore.so,
-    // not the bundle copy, so its $ORIGIN-rooted deps resolve.
+    // not the bundle copy, so its $ORIGIN-rooted dependencies resolve.
     expect(lddInputs).toContain(path.join(toolchain, "libswiftCore.so"));
     expect(lddInputs).not.toContain(path.join(out, "libswiftCore.so"));
   });
@@ -318,7 +317,7 @@ describe("bundle()", () => {
         },
         log: () => {},
       }),
-    ).toThrow(/ldd failed on root executable/);
+    ).toThrow(/Dependency resolution failed on root entry/);
   });
 
   test("Linux: errors out when an allow-listed SO is 'not found'", () => {

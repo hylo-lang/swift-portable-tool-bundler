@@ -1,10 +1,10 @@
-// SPDX short identifier: Apache-2.0
-//
+
 // Windows DLL dependency discovery via `llvm-readobj --coff-imports`.
 // Ported from swift-windows-dll-bundler's `scripts/Bundle-Dlls.ps1`.
 
 import { execFileSync } from "child_process";
 
+/** Runs `llvm-readobj` with the given arguments and returns its stdout. */
 export type RunReadobj = (args: string[]) => string;
 
 /** Default runner: invokes `llvm-readobj` from PATH. */
@@ -24,26 +24,26 @@ export const defaultReadobj: RunReadobj = (args) =>
  * reliable indicator that either the input is not a PE file or the tool
  * failed silently.
  */
-export function parseCoffImports(output: string, modulePath: string): string[] {
-  const chunks = output.split(/Import\s*\{/);
+export function parseCoffImports(importTable: string, modulePath: string): string[] {
+  const chunks = importTable.split(/Import\s*\{/);
   if (chunks.length < 2) {
     throw new Error(
-      `llvm-readobj produced no Import sections for '${modulePath}'. Output was:\n${output}`,
+      `llvm-readobj produced no Import sections for '${modulePath}'. Output was:\n${importTable}`,
     );
   }
 
-  const deps: string[] = [];
-  const nameRe = /^\s*Name:\s*(\S+)\s*$/m;
+  const dependencies: string[] = [];
+  const namePattern = /^\s*Name:\s*(\S+)\s*$/m;
   for (let i = 1; i < chunks.length; i++) {
-    const m = nameRe.exec(chunks[i]);
+    const m = namePattern.exec(chunks[i]);
     if (!m) {
       throw new Error(
         `Could not find 'Name:' field in Import block #${i} of '${modulePath}'. Block was:\n${chunks[i]}`,
       );
     }
-    deps.push(m[1]);
+    dependencies.push(m[1]);
   }
-  return deps;
+  return dependencies;
 }
 
 /** Directly runs `llvm-readobj --coff-imports` and parses the output. */

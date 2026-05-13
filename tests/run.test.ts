@@ -1,4 +1,3 @@
-// SPDX short identifier: Apache-2.0
 
 import { type MockInstance } from "vitest";
 import * as fs from "fs";
@@ -48,7 +47,7 @@ describe("run.main()", () => {
     vi.clearAllMocks();
     setFailed = vi.mocked(core.setFailed);
     setOutput = vi.mocked(core.setOutput);
-    vi.mocked(core.group).mockImplementation(async (_name: string, fn: any) => fn());
+    vi.mocked(core.group).mockImplementation(async (_name: string, fn: () => Promise<unknown>) => fn());
   });
 
   test("sets bundlePath and executablePaths outputs on success", async () => {
