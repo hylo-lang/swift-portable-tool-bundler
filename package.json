@@ -23,7 +23,7 @@
     "eslint": "^10.3.0",
     "eslint-plugin-jest": "^29.0.0",
     "typescript": "^6.0.3",
-    "vitest": "^3.2.0"
+    "vitest": "^4.1.6"
   },
   "dependencies": {
     "@actions/core": "^3.0.1",
